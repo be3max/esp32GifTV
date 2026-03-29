@@ -1,0 +1,31 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:/Users/user/.platformio/penv/Scripts/pio.exe\" run:*)",
+      "Bash(timeout 45 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Bash(timeout 100 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "Bash(timeout 40 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "WebFetch(domain:www.nmminer.com)",
+      "Bash(timeout 20 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "Bash(timeout 15 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "WebFetch(domain:manishkandpal-random-gif-generator.vercel.app)",
+      "Bash(C:Usersuser.platformiopenvScriptspio.exe run:*)",
+      "Bash(\"/c/Users/user/.platformio/penv/Scripts/pio.exe\" run:*)",
+      "Bash(timeout 20 \"/c/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor -b 115200)",
+      "Bash(timeout 30 \"/c/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor -b 115200)",
+      "Bash(pio run:*)",
+      "Bash(timeout 15 pio device monitor -b 115200)",
+      "Bash(timeout 25 pio device monitor -b 115200)",
+      "Bash(timeout 30 pio device monitor -b 115200)",
+      "Bash(timeout 35 pio device monitor -b 115200)",
+      "Bash(timeout 40 pio device monitor -b 115200)",
+      "Bash(timeout 45 pio device monitor -b 115200)",
+      "Bash(timeout 45 \"/c/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor -b 115200)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\user\\.claude"
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wmic path:*)",
+      "Bash(powershell -Command \"Get-WmiObject Win32_SerialPort | Select-Object Name, DeviceID, Description | Format-Table -AutoSize\")",
+      "Bash(esptool.py --port COM7 chip_id)",
+      "Bash(python -m esptool --port COM7 chip_id)",
+      "Bash(pip install:*)",
+      "Bash(python -m esptool --port COM7 flash_id)",
+      "Bash(where pio:*)",
+      "Read(//d/E-disk/PPC/Arduino/esp32/esp32GifScreenSaver/$USERPROFILE/.platformio/penv/Scripts/**)",
+      "Read(//c/Users/user/.platformio/penv/Scripts/**)",
+      "Bash(\"C:/Users/user/.platformio/penv/Scripts/pio.exe\" run:*)",
+      "Bash(timeout 10 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "Bash(timeout 8 \"C:/Users/user/.platformio/penv/Scripts/pio.exe\" device monitor --port COM7 --baud 115200)",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "Bash(gh api:*)",
+      "Bash(python -c \"import json,sys; [print\\(x[''''name'''']\\) for x in json.load\\(sys.stdin\\)]\")",
+      "WebFetch(domain:esp32.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:deepwiki.com)",
+      "Bash(\"C:\\\\Users\\\\user\\\\.platformio\\\\penv\\\\Scripts\\\\pio.exe\" run:*)"
+    ],
+    "defaultMode": "auto"
+  }
+}

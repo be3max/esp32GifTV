@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GIF Screen Saver</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; padding: 1rem; max-width: 640px; margin: auto; }
+  h1   { font-size: 1.4rem; margin-bottom: 1rem; color: #7df; }
+  h2   { font-size: 1rem; margin: 1.4rem 0 0.5rem; color: #aaa; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+  label { display: block; font-size: 0.85rem; color: #bbb; margin-bottom: 0.2rem; }
+  input[type="text"], input[type="number"], textarea {
+    width: 100%; padding: 0.45rem 0.6rem;
+    background: #222; border: 1px solid #444; color: #eee;
+    border-radius: 4px; font-size: 0.9rem; margin-bottom: 0.7rem;
+  }
+  textarea { height: 100px; resize: vertical; font-family: monospace; font-size: 0.8rem; }
+  .toggle { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; }
+  .toggle input[type="checkbox"], .toggle input[type="radio"] { width: 18px; height: 18px; accent-color: #2a7; }
+  .toggle label { margin: 0; font-size: 0.9rem; color: #eee; cursor: pointer; }
+  .hint { font-size: 0.75rem; color: #888; margin: -0.4rem 0 0.6rem; }
+  button {
+    padding: 0.5rem 1.2rem; border: none; border-radius: 4px;
+    cursor: pointer; font-size: 0.9rem; margin-right: 0.5rem;
+  }
+  .btn-save    { background: #2a7; color: #fff; }
+  .btn-restart { background: #a33; color: #fff; }
+  .btn-reset   { background: #555; color: #fff; }
+  #status { margin-bottom: 0.5rem; padding: 0.6rem; background: #1a1a2e;
+            border-radius: 4px; font-size: 0.8rem; color: #8cf; }
+  #msg { margin-top: 0.6rem; font-size: 0.85rem; min-height: 1.2em; color: #7f7; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+  .mode-note { font-size: 0.8rem; color: #999; margin-bottom: 0.3rem; }
+</style>
+</head>
+<body>
+<h1>&#127902; GIF Screen Saver</h1>
+
+<div id="status">Loading status...</div>
+
+<h2>Display Mode</h2>
+<div class="toggle">
+  <input type="radio" id="modeGifOnly" name="display_mode" value="0">
+  <label for="modeGifOnly">Show just random gif</label>
+</div>
+<div class="toggle">
+  <input type="radio" id="modeGifStatus" name="display_mode" value="1">
+  <label for="modeGifStatus">Show status line with weather, date &amp; time + random gif</label>
+</div>
+<div class="toggle">
+  <input type="radio" id="modeClock" name="display_mode" value="2">
+  <label for="modeClock">Show Clock</label>
+</div>
+<div class="toggle">
+  <input type="radio" id="modeWeather" name="display_mode" value="3">
+  <label for="modeWeather">Show Weather</label>
+</div>
+
+<h2>GIF Settings</h2>
+<label>GIF source:</label>
+<div class="toggle">
+  <input type="radio" id="srcDirect" name="gif_source" value="direct" checked>
+  <label for="srcDirect">GIF URLs (one per line)</label>
+</div>
+<div class="toggle">
+  <input type="radio" id="srcFile" name="gif_source" value="file">
+  <label for="srcFile">URL to text file with GIF URLs (one per line)</label>
+</div>
+
+<div id="section_direct">
+  <label>GIF URLs</label>
+  <textarea id="gifUrls" placeholder="https://example.com/animation.gif"></textarea>
+</div>
+
+<div id="section_file" style="display:none">
+  <label>URL to text file</label>
+  <input type="text" id="gifListUrl" placeholder="https://gist.githubusercontent.com/.../gif-urls.txt">
+</div>
+
+<label>Refresh interval (seconds)
+  <input type="number" id="gifRefreshSeconds" min="5" max="3600" value="30">
+</label>
+
+<h2>GIF Cache</h2>
+<p class="hint">Safe max: ~700 KB on your 960 KB partition. Default 500 KB = ~5 GIFs.</p>
+<div class="toggle">
+  <input type="checkbox" id="gifCacheEnabled">
+  <label for="gifCacheEnabled">Cache GIFs locally (stop downloading when full)</label>
+</div>
+<div class="grid2">
+  <label>Max cache size (KB)
+    <input type="number" id="gifCacheMaxKb" min="100" max="700" value="500">
+  </label>
+  <label>Cache lifetime (minutes)
+    <input type="number" id="gifCacheLifetimeMin" min="1" max="1440" value="60">
+  </label>
+</div>
+
+<h2>Visual Effects</h2>
+<div class="toggle">
+  <input type="checkbox" id="gifDissolveEnabled" checked>
+  <label for="gifDissolveEnabled">Dissolve transition between GIFs</label>
+</div>
+<div class="toggle">
+  <input type="checkbox" id="gifCrtEnabled">
+  <label for="gifCrtEnabled">Retro CRT scanline mask</label>
+</div>
+
+<h2>Clock / Timezone</h2>
+<label>POSIX Timezone String
+  <input type="text" id="timezone" value="UTC0" placeholder="EST5EDT,M3.2.0,M11.1.0">
+</label>
+<p class="hint">Examples: UTC0 &nbsp; EST5EDT,M3.2.0,M11.1.0 &nbsp; CST-8 &nbsp; CET-1CEST,M3.5.0,M10.5.0</p>
+
+<h2>Weather (OpenWeatherMap)</h2>
+<div class="grid2">
+  <label>API Key<input type="text" id="weatherApiKey" placeholder="your OWM key"></label>
+  <label>City<input type="text" id="weatherCity" value="Toronto"></label>
+</div>
+<div class="grid2">
+  <label>Latitude<input type="number" id="weatherLat" step="0.001" value="0"></label>
+  <label>Longitude<input type="number" id="weatherLon" step="0.001" value="0"></label>
+</div>
+
+<div style="margin-top:1.2rem">
+  <button class="btn-save" onclick="saveConfig()">Save Config</button>
+  <button class="btn-restart" onclick="restartDevice()">Restart Device</button>
+  <button class="btn-reset" onclick="resetDevice()">Factory Reset</button>
+</div>
+<div id="msg"></div>
+
+<script>
+function updateGifSourceUI() {
+  const useFile = document.getElementById('srcFile').checked;
+  document.getElementById('section_direct').style.display = useFile ? 'none' : 'block';
+  document.getElementById('section_file').style.display = useFile ? 'block' : 'none';
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const c = await r.json();
+    const modeRadio = document.querySelector(`input[name="display_mode"][value="${c.display_mode ?? 1}"]`);
+    if (modeRadio) modeRadio.checked = true;
+    document.getElementById('gifRefreshSeconds').value  = c.gif_refresh_seconds ?? 30;
+    document.getElementById('timezone').value           = c.timezone ?? 'UTC0';
+    document.getElementById('weatherApiKey').value      = c.weather_api_key ?? '';
+    document.getElementById('weatherCity').value        = c.weather_city ?? 'Toronto';
+    document.getElementById('weatherLat').value         = c.weather_lat ?? 0;
+    document.getElementById('weatherLon').value         = c.weather_lon ?? 0;
+    document.getElementById('gifUrls').value            = (c.gif_urls ?? []).join('\n');
+    document.getElementById('gifListUrl').value         = c.gif_list_url ?? '';
+
+    // Set radio button based on gif_use_list_url
+    const useListUrl = c.gif_use_list_url ?? false;
+    document.getElementById('srcFile').checked = useListUrl;
+    document.getElementById('srcDirect').checked = !useListUrl;
+    updateGifSourceUI();
+
+    document.getElementById('gifCacheEnabled').checked   = c.gif_cache_enabled ?? false;
+    document.getElementById('gifCacheMaxKb').value       = c.gif_cache_max_kb ?? 500;
+    document.getElementById('gifCacheLifetimeMin').value = c.gif_cache_lifetime_min ?? 60;
+
+    document.getElementById('gifDissolveEnabled').checked = c.gif_dissolve_enabled ?? true;
+    document.getElementById('gifCrtEnabled').checked      = c.gif_crt_enabled ?? false;
+  } catch (e) {
+    showMsg('Failed to load config', true);
+  }
+}
+
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    const cacheStr = s.cache_count > 0
+      ? `  |  Cache: ${s.cache_count} GIFs / ${(s.cache_bytes/1024).toFixed(0)} KB`
+      : '';
+    document.getElementById('status').textContent =
+      `IP: ${s.ip}  |  RSSI: ${s.rssi} dBm  |  Free heap: ${(s.freeHeap/1024).toFixed(1)} KB  |  Uptime: ${s.uptime}s${cacheStr}`;
+  } catch (e) {}
+}
+
+async function saveConfig() {
+  const urls = document.getElementById('gifUrls').value
+    .split('\n').map(u => u.trim()).filter(u => u.length > 0);
+  const useListUrl = document.getElementById('srcFile').checked;
+  const body = {
+    display_mode:        +(document.querySelector('input[name="display_mode"]:checked')?.value ?? 1),
+    gif_refresh_seconds: +document.getElementById('gifRefreshSeconds').value,
+    timezone:            document.getElementById('timezone').value.trim(),
+    weather_api_key:     document.getElementById('weatherApiKey').value.trim(),
+    weather_city:        document.getElementById('weatherCity').value.trim(),
+    weather_lat:         +document.getElementById('weatherLat').value,
+    weather_lon:         +document.getElementById('weatherLon').value,
+    gif_urls:            urls,
+    gif_use_list_url:    useListUrl,
+    gif_list_url:        document.getElementById('gifListUrl').value.trim(),
+    gif_cache_enabled:   document.getElementById('gifCacheEnabled').checked,
+    gif_cache_max_kb:    +document.getElementById('gifCacheMaxKb').value,
+    gif_cache_lifetime_min: +document.getElementById('gifCacheLifetimeMin').value,
+    gif_dissolve_enabled: document.getElementById('gifDissolveEnabled').checked,
+    gif_crt_enabled:      document.getElementById('gifCrtEnabled').checked,
+  };
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    showMsg(r.ok ? 'Saved!' : 'Save failed.', !r.ok);
+  } catch (e) {
+    showMsg('Save failed: ' + e.message, true);
+  }
+}
+
+async function restartDevice() {
+  if (!confirm('Restart the device?')) return;
+  await fetch('/api/restart', { method: 'POST' });
+  showMsg('Restarting...');
+}
+
+async function resetDevice() {
+  if (!confirm('Reset ALL settings to factory defaults?')) return;
+  await fetch('/api/reset', { method: 'POST' });
+  showMsg('Reset to defaults. Reloading...');
+  setTimeout(() => location.reload(), 1500);
+}
+
+function showMsg(text, isError) {
+  const el = document.getElementById('msg');
+  el.style.color = isError ? '#f77' : '#7f7';
+  el.textContent = text;
+  if (!isError) setTimeout(() => el.textContent = '', 3000);
+}
+
+// Set up radio button change handlers
+document.getElementById('srcDirect').addEventListener('change', updateGifSourceUI);
+document.getElementById('srcFile').addEventListener('change', updateGifSourceUI);
+
+loadConfig();
+loadStatus();
+setInterval(loadStatus, 10000);
+</script>
+</body>
+</html>
