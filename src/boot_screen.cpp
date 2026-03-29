@@ -70,7 +70,7 @@ void BootScreen::begin(TFT_eSPI *tft) {
 }
 
 void BootScreen::drawHeader() {
-    _tft->fillRect(0, 0, 240, HEADER_H, TFT_NAVY);
+    _tft->fillRect(0, 0, TFT_WIDTH, HEADER_H, TFT_NAVY);
 
     setFont();
     _tft->setTextColor(TFT_YELLOW, TFT_NAVY);
@@ -81,18 +81,18 @@ void BootScreen::drawHeader() {
 
     // Right label — measured dynamically to stay right-aligned with any font
     const char *rightLabel = "Award 2026";
-    _tft->setCursor(240 - _tft->textWidth(rightLabel) - MARGIN_X, 2);
+    _tft->setCursor(TFT_WIDTH - _tft->textWidth(rightLabel) - MARGIN_X, 2);
     _tft->print(rightLabel);
 
     // Separator
-    _tft->drawFastHLine(0, HEADER_H,     240, TFT_CYAN);
-    _tft->drawFastHLine(0, HEADER_H + 1, 240, TFT_DARKGREY);
+    _tft->drawFastHLine(0, HEADER_H,     TFT_WIDTH, TFT_CYAN);
+    _tft->drawFastHLine(0, HEADER_H + 1, TFT_WIDTH, TFT_DARKGREY);
 }
 
 void BootScreen::postLine(const char *label, Tag tag) {
     const uint16_t y = SCROLL_TOP + (_scrollRow % MAX_LINES) * LINE_H;
 
-    _tft->fillRect(0, y, 240, LINE_H - 1, TFT_BLACK);
+    _tft->fillRect(0, y, TFT_WIDTH, LINE_H - 1, TFT_BLACK);
 
     setFont();
     _tft->setTextColor(TFT_WHITE, TFT_BLACK);
@@ -101,7 +101,7 @@ void BootScreen::postLine(const char *label, Tag tag) {
 
     // Tag position is computed at runtime — font 2 is variable-width
     const uint16_t tagW = (tag != Tag::NONE) ? _tft->textWidth(tagStr(tag)) : 0;
-    const uint16_t tagX = 240 - tagW - MARGIN_X;
+    const uint16_t tagX = TFT_WIDTH - tagW - MARGIN_X;
 
     _lastTagX = tagX;
     _lastTagY = y;
@@ -114,7 +114,7 @@ void BootScreen::postLine(const char *label, Tag tag) {
 void BootScreen::updateLastTag(Tag tag) {
     setFont();
     const uint16_t newW = (tag != Tag::NONE) ? _tft->textWidth(tagStr(tag)) : 0;
-    const uint16_t newX = 240 - newW - MARGIN_X;
+    const uint16_t newX = TFT_WIDTH - newW - MARGIN_X;
 
     // Erase the union of old and new tag rects to prevent ghost pixels
     const uint16_t eraseX = min(newX, _lastTagX);

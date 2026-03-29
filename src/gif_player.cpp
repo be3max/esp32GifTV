@@ -744,9 +744,10 @@ bool GifPlayer::streamGifToFlash(const String &url) {
             if (filename.length() > 30) filename = filename.substring(0, 27) + "...";
 
             _tft->fillScreen(TFT_BLACK);
+            _tft->setTextFont(1);
+            _tft->setTextSize(1);
             _tft->setTextDatum(MC_DATUM);
             _tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-            _tft->setTextSize(1);
             _tft->drawString(filename, _tft->width() / 2, _tft->height() / 2 - 30);
             _tft->drawString("GIF too large", _tft->width() / 2, _tft->height() / 2 - 10);
             _tft->setTextColor(TFT_WHITE, TFT_BLACK);

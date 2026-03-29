@@ -3,7 +3,7 @@
 #include <TFT_eSPI.h>
 
 // Retro Award BIOS / MS-DOS style boot screen renderer.
-// Zero heap allocation — all state fits in 5 bytes of member variables.
+// Zero heap allocation — all state fits in member variables (~11 bytes).
 class BootScreen {
 public:
     enum class Tag : uint8_t { NONE = 0, OK, FAIL, WAIT };
@@ -37,18 +37,18 @@ private:
     uint16_t   _lastTagX  = 0;   // pixel x of most-recently drawn tag
     uint16_t   _lastTagY  = 0;   // pixel y of most-recently drawn tag
 
+    uint16_t _lastTagW = 0;    // pixel width of most-recently drawn tag
+
+    static constexpr uint16_t COLOR_DIALOG_BG = 0x2124;  // dark navy-grey
+
     void drawTag(uint16_t x, uint16_t y, Tag tag);
     void setFont();             // always call before drawing text
 
     // Draws the shared MS-DOS dialog chrome: background fill, double border,
     // dark-grey title bar with centred title text, separator line, blue content area.
-    // Caller draws content on top of the returned content-area top-y.
+    // Content area begins at pixel y = by + titleH + 2; caller draws on top of it.
     void drawDialogFrame(uint8_t bx, uint8_t by, uint8_t bw, uint8_t bh,
                          uint8_t titleH, const char *title);
-
-    uint16_t _lastTagW = 0;    // pixel width of most-recently drawn tag
-
-    static constexpr uint16_t COLOR_DIALOG_BG = 0x2124;  // dark navy-grey
 
     static constexpr uint8_t  HEADER_H   = 20;   // header bar height in px
     static constexpr uint8_t  SCROLL_TOP = 23;   // y of first POST line
