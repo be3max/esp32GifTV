@@ -67,6 +67,14 @@ static void drawTouchIndicator(bool show) {
     }
 }
 
+static int8_t parseTimezoneOffset(const char *tzStr) {
+    // Parse "UTC-5", "UTC+2", "UTC0" etc. and return the numeric offset in hours
+    // Format: "UTC" followed by optional sign and number
+    if (!tzStr || strlen(tzStr) < 3) return 0;
+    int offset = atoi(tzStr + 3);  // Skip "UTC" and parse the number
+    return (int8_t)offset;
+}
+
 // ── Touch Button FSM ──────────────────────────────────────────────────────────
 static BtnEvent checkButton() {
     uint16_t touchVal = touchRead(PIN_TOUCH);
@@ -184,17 +192,15 @@ void setup() {
         bootScreen.postLine("Loading /config.json", BootScreen::Tag::OK);
     }
 
-    // Apply POSIX timezone from config
+    // Initialize NTP with timezone in one call (always, even in GIF mode, for status bar)
+    // Note: configTzTime() atomically sets both NTP server and POSIX TZ env var
+    // POSIX sign is inverted: "UTC5" = 5 hours behind UTC = UTC-5
     const DeviceConfig &cfg = configMgr.getConfig();
-    if (cfg.timezone[0]) {
-        setenv("TZ", cfg.timezone, 1);
-        tzset();
-        bootScreen.postLine("Timezone configured", BootScreen::Tag::OK);
-    }
-
-    // Initialize NTP (always, even in GIF mode, for status bar)
-    configTime(0, 0, "pool.ntp.org");
-    bootScreen.postLine("NTP: pool.ntp.org", BootScreen::Tag::WAIT);
+    int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
+    char posixTz[16];
+    snprintf(posixTz, sizeof(posixTz), "UTC%d", -tzOffset);
+    configTzTime(posixTz, "pool.ntp.org");
+    bootScreen.postLine("NTP + Timezone configured", BootScreen::Tag::OK);
 
     // WiFi
     bootScreen.postLine("WiFi: connecting...", BootScreen::Tag::WAIT);
@@ -222,7 +228,8 @@ void setup() {
     gifPlayer.setRefreshInterval(cfg.gif_refresh_seconds);
     gifPlayer.setClipHeight(cfg.display_mode == DISPLAY_MODE_GIF_ONLY ? TFT_HEIGHT : STATUS_BAR_Y);
     if (currentMode == AppMode::CLOCK) {
-        clockDisplay.begin(&tft, "pool.ntp.org", 0);
+        int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
+        clockDisplay.begin(&tft, "pool.ntp.org", tzOffset);
     }
 
     {
@@ -289,7 +296,8 @@ void loop() {
         tft.fillScreen(TFT_BLACK);
         gifPlayer.setClipHeight(cfg.display_mode == DISPLAY_MODE_GIF_ONLY ? TFT_HEIGHT : STATUS_BAR_Y);
         if (currentMode == AppMode::CLOCK) {
-            clockDisplay.begin(&tft, "pool.ntp.org", 0);
+            int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
+            clockDisplay.begin(&tft, "pool.ntp.org", tzOffset);
         }
     }
 
