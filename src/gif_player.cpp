@@ -28,19 +28,22 @@ static int s_gifClipH = STATUS_BAR_Y;
 static uint16_t s_prevLineRGB[240] = {0};
 static bool s_hasPrevLine = false;
 
-// ── Dissolve transition state ──────────────────────────────────────────────
-// 8×8 pixel blocks: 30 columns × 30 rows = 900 blocks total
+// ── Block dissolve transition state ────────────────────────────────────────
+// 8×8 pixel blocks: 30 columns × 30 rows = 900 blocks total.
+// Blocks are shuffled randomly then revealed with ease-in quadratic timing —
+// a few random squares appear first, then more and more blocks flood in faster.
 static constexpr uint16_t DISSOLVE_BLOCKS     = 900;    // 30×30
 static constexpr uint8_t  DISSOLVE_BLOCK_SIZE = 8;      // pixels per block edge
 static constexpr uint8_t  DISSOLVE_COLS       = 30;     // TFT_WIDTH  / DISSOLVE_BLOCK_SIZE
 static constexpr uint8_t  DISSOLVE_ROWS       = 30;     // TFT_HEIGHT / DISSOLVE_BLOCK_SIZE
-static constexpr uint8_t  DISSOLVE_BPF        = 30;     // blocks revealed per frame
+static constexpr uint32_t DISSOLVE_DURATION_MS = 2000;  // total transition time (ms)
 
 static uint16_t s_blockOrder[DISSOLVE_BLOCKS];          // shuffled block indices (1800 B)
 static uint8_t  s_blockRevealed[113] = {0};             // bitmask: 1 = block revealed (113 B)
-static bool     s_inTransition   = false;               // transition currently active
-static uint16_t s_transitionStep = 0;                   // blocks revealed so far
-static bool     s_crtEnabled     = false;               // cached CRT setting for callback
+static bool     s_inTransition    = false;              // transition currently active
+static uint16_t s_transitionStep  = 0;                  // blocks revealed so far
+static uint32_t s_transitionStart = 0;                  // millis() when transition began
+static bool     s_crtEnabled      = false;              // cached CRT setting for callback
 
 static inline void blockSetRevealed(uint16_t idx) {
     s_blockRevealed[idx >> 3] |= (1u << (idx & 7));
@@ -281,17 +284,32 @@ void GifPlayer::tick() {
         static uint32_t s_frameCount = 0;  // NOLINT — intentionally persistent
         int result = _gif.playFrame(true, nullptr);
 
-        // Advance dissolve transition
-        if (s_inTransition && result > 0) {
-            uint16_t end = s_transitionStep + DISSOLVE_BPF;
-            if (end >= DISSOLVE_BLOCKS) {
-                end = DISSOLVE_BLOCKS;
-                s_inTransition = false;
-                Serial.println("[GIF] Transition complete");
+        // Advance block dissolve transition (time-based, ease-in quadratic, independent of GIF frame rate)
+        if (s_inTransition) {
+            uint32_t elapsed = millis() - s_transitionStart;
+
+            // Ease-in quadratic: targetStep = DISSOLVE_BLOCKS * (t/duration)^2
+            // Using fixed-point: t_frac = elapsed * 256 / duration (0..256)
+            // targetStep = DISSOLVE_BLOCKS * t_frac^2 / 65536
+            uint32_t t256 = min((uint32_t)256, (elapsed * 256) / DISSOLVE_DURATION_MS);
+            uint16_t targetStep = (uint16_t)((uint32_t)DISSOLVE_BLOCKS * t256 * t256 >> 16);
+
+            if (targetStep > s_transitionStep) {
+                // Reveal blocks in shuffled order from s_blockOrder[s_transitionStep..targetStep)
+                for (uint16_t i = s_transitionStep; i < targetStep; i++)
+                    blockSetRevealed(s_blockOrder[i]);
+                s_transitionStep = targetStep;
             }
-            for (uint16_t i = s_transitionStep; i < end; i++)
-                blockSetRevealed(s_blockOrder[i]);
-            s_transitionStep = end;
+
+            if (s_transitionStep >= DISSOLVE_BLOCKS) {
+                s_inTransition = false;
+                Serial.println("[GIF] Block dissolve transition complete");
+            }
+        }
+
+        // Refresh toast countdown every ~1s while retry is pending
+        if (_retryAfterMs != 0 && _toastVisible && (now - _toastShownMs) >= 1000) {
+            drawToast();
         }
 
         if (result > 0) {
@@ -363,14 +381,11 @@ void GifPlayer::startTransition() {
     // 3. Clear bitmask — no blocks revealed yet
     memset(s_blockRevealed, 0, sizeof(s_blockRevealed));
 
-    // 4. Pre-reveal first batch so frame 0 shows some pixels immediately
     s_transitionStep = 0;
     s_inTransition   = true;
-    uint16_t firstBatch = min((uint16_t)DISSOLVE_BPF, (uint16_t)DISSOLVE_BLOCKS);
-    for (uint16_t i = 0; i < firstBatch; i++) blockSetRevealed(s_blockOrder[i]);
-    s_transitionStep = firstBatch;
+    s_transitionStart = millis();
 
-    Serial.printf("[GIF] Transition start (heap=%u)\n", ESP.getFreeHeap());
+    Serial.printf("[GIF] Block dissolve start (ease-in quadratic, heap=%u)\n", ESP.getFreeHeap());
 }
 
 void GifPlayer::openAndPlayFile(const char *path) {
@@ -409,6 +424,9 @@ void GifPlayer::openAndPlayFile(const char *path) {
         _playing     = true;
         _hasGif      = true;
         _lastFetchMs = millis();
+
+        // Clear any pending failure toast
+        clearToast();
 
         // Cache CRT setting for scanline callback
         s_crtEnabled = configMgr.getConfig().gif_crt_enabled;
@@ -531,6 +549,7 @@ void GifPlayer::fetchAndPlay() {
     } else if (!fetchRandomGifUrl(gifUrl)) {
         Serial.println("[GIF] API failed — retry in 10 s");
         _retryAfterMs = millis() + 10000;
+        drawToast();
         return;
     }
 
@@ -538,6 +557,7 @@ void GifPlayer::fetchAndPlay() {
     if (!streamGifToFlash(gifUrl)) {
         Serial.println("[GIF] Download failed — retry in 10 s");
         _retryAfterMs = millis() + 10000;
+        drawToast();
         return;
     }
 
@@ -572,6 +592,48 @@ void GifPlayer::stop() {
     }
     if (_buf) { free(_buf); _buf = nullptr; _bufLen = 0; }
     _hasGif = false;
+}
+
+// ── Toast notification (no-internet) ───────────────────────────────────────
+
+static constexpr int TOAST_X = 20;
+static constexpr int TOAST_Y = 185;
+static constexpr int TOAST_W = 200;
+static constexpr int TOAST_H = 34;
+
+void GifPlayer::drawToast() {
+    if (!_tft || _retryAfterMs == 0) return;
+
+    uint32_t now     = millis();
+    uint32_t secsLeft = (_retryAfterMs > now)
+                        ? ((_retryAfterMs - now) + 999) / 1000
+                        : 0;
+
+    // Background + border
+    _tft->fillRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_MAROON);
+    _tft->drawRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_WHITE);
+
+    // Icon: [!] in yellow
+    _tft->setTextFont(2);
+    _tft->setTextSize(1);
+    _tft->setTextColor(TFT_YELLOW, TFT_MAROON);
+    _tft->setTextDatum(ML_DATUM);
+    _tft->drawString("[!]", TOAST_X + 6, TOAST_Y + TOAST_H / 2);
+
+    // Status text with countdown in white
+    char buf[32];
+    snprintf(buf, sizeof(buf), "No internet  %us", (unsigned)secsLeft);
+    _tft->setTextColor(TFT_WHITE, TFT_MAROON);
+    _tft->drawString(buf, TOAST_X + 32, TOAST_Y + TOAST_H / 2);
+
+    _toastShownMs = now;
+    _toastVisible = true;
+}
+
+void GifPlayer::clearToast() {
+    if (!_tft || !_toastVisible) return;
+    _tft->fillRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_BLACK);
+    _toastVisible = false;
 }
 
 uint8_t GifPlayer::getCacheCount() {
@@ -798,7 +860,7 @@ bool GifPlayer::streamGifToFlash(const String &url) {
     return true;
 }
 
-// ── Dissolve transition helper ────────────────────────────────────────────
+// ── Block dissolve transition helper ───────────────────────────────────────
 // When transition is active, push only scanline segments belonging to revealed
 // blocks; unrevealed blocks leave old TFT content intact.
 static void pushScanlineWithTransition(TFT_eSPI *tft, int dy, uint16_t *scaledBuf) {

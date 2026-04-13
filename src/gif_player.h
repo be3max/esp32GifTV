@@ -11,6 +11,7 @@ public:
     void setRefreshInterval(uint16_t seconds);
     void setClipHeight(int h);                 // set GIF render clip height (224 for status bar, 240 for full)
     void stop();                               // stop playback (call when leaving GIF mode)
+    bool isPlaying() const { return _playing; } // true once first GIF frame is rendering
     uint8_t  getCacheCount();                  // returns current number of cached GIFs
     uint32_t getCacheBytes();                  // returns total bytes in cache
     void clearCacheOnBoot();                   // clear all cached GIFs on ESP startup
@@ -58,7 +59,13 @@ private:
     String  cacheRandomPath(int8_t excludeIdx = -1); // return random cached GIF path (avoid repeat)
 
     void    openAndPlayFile(const char *path); // open GIF file and play it
-    void    startTransition();                  // initialize and arm the dissolve transition
+    void    startTransition();                  // initialize and arm the glitch transition
+
+    // ── Toast notification (no-internet) ──────────────────────────────────────
+    uint32_t  _toastShownMs  = 0;              // millis() when toast was last drawn
+    bool      _toastVisible  = false;          // true while retry-pending toast is shown
+    void      drawToast();                     // render/refresh the toast overlay
+    void      clearToast();                    // erase toast rect with fillRect
 
     static void gifDrawCallback(GIFDRAW *pDraw);
 };

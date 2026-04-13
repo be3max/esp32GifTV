@@ -31,6 +31,10 @@ public:
     // Clear display to black. Call at end of boot to hand off to main loop.
     void done();
 
+    // Draw console-style loading animation (> C:\load.exe with blinking cursor).
+    // Call in loop() while GIF is loading. Automatically stops once animation is dismissed.
+    void tickLoadingAnim(uint32_t now);
+
 private:
     TFT_eSPI  *_tft       = nullptr;
     uint8_t    _scrollRow = 0;   // next POST line index (0-based)
@@ -38,6 +42,11 @@ private:
     uint16_t   _lastTagY  = 0;   // pixel y of most-recently drawn tag
 
     uint16_t _lastTagW = 0;    // pixel width of most-recently drawn tag
+
+    // Loading animation state
+    uint32_t   _animStartMs = 0;  // millis() when animation started (0 = not started)
+    uint16_t   _cursorX     = 0;  // x position of blinking cursor
+    bool       _cursorOn    = true;
 
     static constexpr uint16_t COLOR_DIALOG_BG = 0x2124;  // dark navy-grey
 
@@ -50,10 +59,10 @@ private:
     void drawDialogFrame(uint8_t bx, uint8_t by, uint8_t bw, uint8_t bh,
                          uint8_t titleH, const char *title);
 
-    static constexpr uint8_t  HEADER_H   = 20;   // header bar height in px
-    static constexpr uint8_t  SCROLL_TOP = 23;   // y of first POST line
-    static constexpr uint8_t  LINE_H     = 18;   // px per POST line (font2 16px + 2px gap)
-    static constexpr uint8_t  MAX_LINES  = 12;   // lines before wrapping
+    static constexpr uint8_t  HEADER_H   = 52;   // header bar height in px
+    static constexpr uint8_t  SCROLL_TOP = 55;   // y of first POST line
+    static constexpr uint8_t  LINE_H     = 17;   // px per POST line (font2 16px + 1px gap)
+    static constexpr uint8_t  MAX_LINES  = 11;   // lines before wrapping
     static constexpr uint8_t  MARGIN_X   = 3;
 };
 

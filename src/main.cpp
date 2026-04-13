@@ -14,6 +14,7 @@
 #include "clock_display.h"
 #include "status_bar.h"
 #include "boot_screen.h"
+#include "popup_menu.h"
 
 // ── Hardware (NM-TV-154) ─────────────────────────────────────────────────────
 #define TFT_POWER_PIN  21   // Active LOW — P-FET gate powering the display
@@ -75,6 +76,29 @@ static int8_t parseTimezoneOffset(const char *tzStr) {
     return (int8_t)offset;
 }
 
+static const char* buildPosixTz(int8_t offsetHours, char *buf, size_t bufSize) {
+    // Build POSIX TZ string with DST rules for North American zones
+    // All NA DST zones use M3.2.0 (2nd Sun Mar) to M11.1.0 (1st Sun Nov)
+    struct {
+        int8_t offset;
+        const char *posix;
+    } NA_ZONES[] = {
+        { -5, "EST5EDT,M3.2.0,M11.1.0" },  // Eastern
+        { -6, "CST6CDT,M3.2.0,M11.1.0" },  // Central
+        { -7, "MST7MDT,M3.2.0,M11.1.0" },  // Mountain
+        { -8, "PST8PDT,M3.2.0,M11.1.0" },  // Pacific
+    };
+    for (size_t i = 0; i < sizeof(NA_ZONES) / sizeof(NA_ZONES[0]); i++) {
+        if (NA_ZONES[i].offset == offsetHours) {
+            strlcpy(buf, NA_ZONES[i].posix, bufSize);
+            return buf;
+        }
+    }
+    // Fall back: no DST for non-NA offsets
+    snprintf(buf, bufSize, "UTC%d", -offsetHours);
+    return buf;
+}
+
 // ── Touch Button FSM ──────────────────────────────────────────────────────────
 static BtnEvent checkButton() {
     uint16_t touchVal = touchRead(PIN_TOUCH);
@@ -95,10 +119,12 @@ static BtnEvent checkButton() {
     bool pressed = btnStable;
     if ((now - btnDebounceMs) >= BTN_DEBOUNCE_MS) { pressed = raw; btnStable = raw; }
 
-    // Track pressed state change for visual feedback
+    // Track pressed state change for visual feedback (skip if menu is visible)
     if (pressed != btnPressed) {
         btnPressed = pressed;
-        drawTouchIndicator(pressed);
+        if (!popupMenu.isVisible()) {
+            drawTouchIndicator(pressed);
+        }
     }
 
     switch (btnState) {
@@ -194,11 +220,11 @@ void setup() {
 
     // Initialize NTP with timezone in one call (always, even in GIF mode, for status bar)
     // Note: configTzTime() atomically sets both NTP server and POSIX TZ env var
-    // POSIX sign is inverted: "UTC5" = 5 hours behind UTC = UTC-5
+    // For North American zones, applies automatic DST rules (e.g., EST5EDT,M3.2.0,M11.1.0)
     const DeviceConfig &cfg = configMgr.getConfig();
     int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
-    char posixTz[16];
-    snprintf(posixTz, sizeof(posixTz), "UTC%d", -tzOffset);
+    char posixTz[32];
+    buildPosixTz(tzOffset, posixTz, sizeof(posixTz));
     configTzTime(posixTz, "pool.ntp.org");
     bootScreen.postLine("NTP + Timezone configured", BootScreen::Tag::OK);
 
@@ -223,6 +249,7 @@ void setup() {
     weather.begin(&tft);
     statusBar.begin(&tft);
     webPortal.begin();
+    popupMenu.begin(&tft);
 
     currentMode = pickMode(cfg);
     gifPlayer.setRefreshInterval(cfg.gif_refresh_seconds);
@@ -265,50 +292,67 @@ void loop() {
     // ── Button handling ───────────────────────────────────────────────────────
     BtnEvent btnEvt = checkButton();
 
-    if (btnEvt == BtnEvent::HOLD) {
-        Serial.println("[BTN] HOLD → restart");
-        ESP.restart();
-    }
+    // Menu mode — bypass all other button handling
+    if (popupMenu.isVisible()) {
+        PopupMenu::Action menuAct = popupMenu.tick(btnPressed, millis());
 
-    if (currentMode == AppMode::GIF) {
-        if (btnEvt == BtnEvent::TAP) {
-            Serial.println("[BTN] TAP → next GIF");
-            gifPlayer.fetchAndPlay();
-        }
-        else if (btnEvt == BtnEvent::DOUBLE_TAP) {
-            Serial.println("[BTN] DOUBLE_TAP → clear cache");
+        if (menuAct == PopupMenu::Action::CLEAR_CACHE) {
+            Serial.println("[MENU] Clear Cache");
             gifPlayer.stop();
             gifPlayer.clearCacheOnBoot();
             gifPlayer.clearListCache();
             bootScreen.showDialog("[ Cache Manager ]", "Cache cleared", 2000);
             tft.fillScreen(TFT_BLACK);
             gifPlayer.fetchAndPlay();
+        } else if (menuAct == PopupMenu::Action::RESTART) {
+            Serial.println("[MENU] Restart");
+            ESP.restart();
+        }
+        // Action::CLOSE or NONE → menu self-dismisses or continues
+    } else {
+        // Normal button handling (when menu not visible)
+        if (btnEvt == BtnEvent::HOLD) {
+            Serial.println("[BTN] HOLD → show menu");
+            popupMenu.show(millis());
+        } else if (currentMode == AppMode::GIF && btnEvt == BtnEvent::TAP) {
+            Serial.println("[BTN] TAP → next GIF");
+            gifPlayer.fetchAndPlay();
         }
     }
 
     const DeviceConfig &cfg = configMgr.getConfig();
 
-    // React to config changes from web portal
-    AppMode cfgMode = pickMode(cfg);
-    if (cfgMode != currentMode) {
-        if (currentMode == AppMode::GIF) gifPlayer.stop();
-        currentMode = cfgMode;
-        tft.fillScreen(TFT_BLACK);
-        gifPlayer.setClipHeight(cfg.display_mode == DISPLAY_MODE_GIF_ONLY ? TFT_HEIGHT : STATUS_BAR_Y);
-        if (currentMode == AppMode::CLOCK) {
-            int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
-            clockDisplay.begin(&tft, "pool.ntp.org", tzOffset);
+    // React to config changes from web portal (skip if menu is visible)
+    if (!popupMenu.isVisible()) {
+        AppMode cfgMode = pickMode(cfg);
+        if (cfgMode != currentMode) {
+            if (currentMode == AppMode::GIF) gifPlayer.stop();
+            currentMode = cfgMode;
+            tft.fillScreen(TFT_BLACK);
+            gifPlayer.setClipHeight(cfg.display_mode == DISPLAY_MODE_GIF_ONLY ? TFT_HEIGHT : STATUS_BAR_Y);
+            if (currentMode == AppMode::CLOCK) {
+                int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
+                clockDisplay.begin(&tft, "pool.ntp.org", tzOffset);
+            }
         }
     }
 
-    switch (currentMode) {
+    // Skip mode processing while menu is visible (GIF is paused)
+    if (!popupMenu.isVisible()) {
+        switch (currentMode) {
 
-        case AppMode::GIF: {
-            gifPlayer.setRefreshInterval(cfg.gif_refresh_seconds);
-            gifPlayer.tick();
+            case AppMode::GIF: {
+                uint32_t now = millis();
+
+                // Show loading animation while first GIF is loading
+                if (!gifPlayer.isPlaying()) {
+                    bootScreen.tickLoadingAnim(now);
+                }
+
+                gifPlayer.setRefreshInterval(cfg.gif_refresh_seconds);
+                gifPlayer.tick();
 
             // Fetch weather periodically if enabled (for status bar in GIF_STATUS mode)
-            uint32_t now = millis();
             if (cfg.display_mode == DISPLAY_MODE_GIF_STATUS && cfg.weather_api_key[0] != '\0') {
                 if (!weather.data.valid || (now - weatherFetchMs > 10UL * 60000UL)) {
                     weather.fetch(cfg.weather_api_key, cfg.weather_city);
@@ -322,22 +366,23 @@ void loop() {
                 statusBarDrawMs = now;
             }
             break;
-        }
-
-        case AppMode::CLOCK:
-            clockDisplay.update();
-            delay(100);
-            break;
-
-        case AppMode::WEATHER: {
-            uint32_t now = millis();
-            if (!weather.data.valid || (now - weatherFetchMs > 10UL * 60000UL)) {
-                weather.fetch(cfg.weather_api_key, cfg.weather_city);
-                weatherFetchMs = now;
             }
-            weather.draw();
-            delay(30000);
-            break;
+
+            case AppMode::CLOCK:
+                clockDisplay.update();
+                delay(100);
+                break;
+
+            case AppMode::WEATHER: {
+                uint32_t now = millis();
+                if (!weather.data.valid || (now - weatherFetchMs > 10UL * 60000UL)) {
+                    weather.fetch(cfg.weather_api_key, cfg.weather_city);
+                    weatherFetchMs = now;
+                }
+                weather.draw();
+                delay(30000);
+                break;
+            }
         }
     }
 }

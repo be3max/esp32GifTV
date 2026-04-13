@@ -5,9 +5,10 @@
 
 Weather weather;
 
-// OpenWeatherMap free API endpoint
+// OpenWeatherMap free API endpoint — 5-day forecast (3-hour intervals)
+// We'll extract today's min/max from the forecast data
 static const char *OWM_URL =
-    "http://api.openweathermap.org/data/2.5/weather?q=%s&appid=%s&units=metric";
+    "http://api.openweathermap.org/data/2.5/forecast?q=%s&appid=%s&units=metric";
 
 void Weather::begin(TFT_eSPI *display) {
     _tft = display;
@@ -33,18 +34,41 @@ bool Weather::fetch(const String &apiKey, const String &city) {
     http.end();
 
     JsonDocument doc;
-    if (deserializeJson(doc, body)) return false;
+    if (deserializeJson(doc, body)) {
+        Serial.println("[WX] JSON parse failed");
+        return false;
+    }
 
-    data.description = doc["weather"][0]["description"] | "unknown";
-    data.icon        = doc["weather"][0]["icon"]        | "";
-    data.tempC       = doc["main"]["temp"]              | 0.0f;
-    data.tempMin     = doc["main"]["temp_min"]          | 0.0f;
-    data.tempMax     = doc["main"]["temp_max"]          | 0.0f;
-    data.humidity    = doc["main"]["humidity"]          | 0.0f;
+    // Forecast API returns a list of 3-hourly forecasts
+    // Extract current (first item), description, and min/max from today's forecasts
+    JsonArray list = doc["list"];
+    if (list.size() == 0) {
+        Serial.println("[WX] Forecast list is empty");
+        return false;
+    }
+
+    // Use first forecast item for current conditions
+    float currTemp = list[0]["main"]["temp"] | 0.0f;
+    data.description = list[0]["weather"][0]["description"] | "unknown";
+    data.icon        = list[0]["weather"][0]["icon"]        | "";
+    data.humidity    = list[0]["main"]["humidity"]          | 0.0f;
+
+    // Calculate min/max from all forecast items for today (use all available forecasts)
+    float minTemp = currTemp;
+    float maxTemp = currTemp;
+    for (JsonObject item : list) {
+        float temp = item["main"]["temp"] | 0.0f;
+        if (temp < minTemp) minTemp = temp;
+        if (temp > maxTemp) maxTemp = temp;
+    }
+
+    data.tempC       = currTemp;
+    data.tempMin     = minTemp;
+    data.tempMax     = maxTemp;
     data.valid       = true;
 
-    Serial.printf("[WX] %s %.1f°C %s\n",
-        city.c_str(), data.tempC, data.description.c_str());
+    Serial.printf("[WX] %s curr=%.1f min=%.1f max=%.1f %s\n",
+        city.c_str(), data.tempC, data.tempMin, data.tempMax, data.description.c_str());
     return true;
 }
 
