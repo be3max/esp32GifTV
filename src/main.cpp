@@ -201,6 +201,7 @@ void setup() {
     // and WiFi fragment the heap — to ensure a large contiguous block is available.
     bootScreen.postLine("Allocating GIF frame buffer", BootScreen::Tag::WAIT);
     gifPlayer.begin(&tft);
+    popupMenu.begin(&tft);  // Allocate menu sprite before WiFi fragments heap
     bootScreen.updateLastTag(BootScreen::Tag::OK);
 
     bootScreen.postLine("Clearing boot cache", BootScreen::Tag::WAIT);
@@ -249,7 +250,6 @@ void setup() {
     weather.begin(&tft);
     statusBar.begin(&tft);
     webPortal.begin();
-    popupMenu.begin(&tft);
 
     currentMode = pickMode(cfg);
     gifPlayer.setRefreshInterval(cfg.gif_refresh_seconds);
@@ -296,6 +296,11 @@ void loop() {
     if (popupMenu.isVisible()) {
         PopupMenu::Action menuAct = popupMenu.tick(btnPressed, millis());
 
+        if (menuAct != PopupMenu::Action::NONE) {
+            // Consume any in-flight button state so release doesn't re-trigger HOLD
+            btnState = BtnState::IDLE;
+        }
+
         if (menuAct == PopupMenu::Action::CLEAR_CACHE) {
             Serial.println("[MENU] Clear Cache");
             gifPlayer.stop();
@@ -307,6 +312,9 @@ void loop() {
         } else if (menuAct == PopupMenu::Action::RESTART) {
             Serial.println("[MENU] Restart");
             ESP.restart();
+        } else if (menuAct == PopupMenu::Action::INFO) {
+            Serial.println("[MENU] Info");
+            popupMenu.showInfo(WiFi.localIP().toString().c_str(), WiFi.RSSI());
         }
         // Action::CLOSE or NONE → menu self-dismisses or continues
     } else {
