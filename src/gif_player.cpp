@@ -1,6 +1,7 @@
 #include "gif_player.h"
 #include "config_manager.h"
 #include "status_bar.h"
+#include "ui_theme.h"
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
@@ -609,22 +610,28 @@ void GifPlayer::drawToast() {
                         ? ((_retryAfterMs - now) + 999) / 1000
                         : 0;
 
-    // Background + border
-    _tft->fillRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_MAROON);
-    _tft->drawRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_WHITE);
-
-    // Icon: [!] in yellow
     _tft->setTextFont(2);
     _tft->setTextSize(1);
-    _tft->setTextColor(TFT_YELLOW, TFT_MAROON);
-    _tft->setTextDatum(ML_DATUM);
-    _tft->drawString("[!]", TOAST_X + 6, TOAST_Y + TOAST_H / 2);
 
-    // Status text with countdown in white
-    char buf[32];
-    snprintf(buf, sizeof(buf), "No internet  %us", (unsigned)secsLeft);
+    if (!_toastVisible) {
+        // DOS error mini-dialog: double border over maroon (chrome drawn once)
+        uiDrawDosFrame(_tft, TOAST_X, TOAST_Y, TOAST_W, TOAST_H, 0, nullptr, TFT_MAROON);
+
+        _tft->setTextColor(TFT_YELLOW, TFT_MAROON);
+        _tft->setTextDatum(ML_DATUM);
+        _tft->drawString("[!]", TOAST_X + 8, TOAST_Y + TOAST_H / 2);
+
+        _tft->setTextColor(TFT_WHITE, TFT_MAROON);
+        _tft->drawString("No internet", TOAST_X + 34, TOAST_Y + TOAST_H / 2);
+    }
+
+    // Countdown field — only this small cell repaints each second
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%us", (unsigned)secsLeft);
+    _tft->fillRect(TOAST_X + TOAST_W - 48, TOAST_Y + 4, 40, TOAST_H - 8, TFT_MAROON);
     _tft->setTextColor(TFT_WHITE, TFT_MAROON);
-    _tft->drawString(buf, TOAST_X + 32, TOAST_Y + TOAST_H / 2);
+    _tft->setTextDatum(MR_DATUM);
+    _tft->drawString(buf, TOAST_X + TOAST_W - 10, TOAST_Y + TOAST_H / 2);
 
     _toastShownMs = now;
     _toastVisible = true;

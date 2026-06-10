@@ -1,5 +1,6 @@
 #include "weather.h"
 #include "config_manager.h"
+#include "ui_theme.h"
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
@@ -72,25 +73,114 @@ bool Weather::fetch(const String &apiKey, const String &city) {
     return true;
 }
 
-void Weather::draw() {
-    if (!_tft || !data.valid) return;
-
+void Weather::drawPanel() {
     _tft->fillScreen(TFT_BLACK);
+    uiDrawDosFrame(_tft, PX, PY, PW, PH, PTITLE_H, "[ WEATHER.EXE ]");
+    _panelDrawn = true;
+}
+
+// Primitive-drawn mini weather icon (32x32 cell) from OWM icon code prefix.
+void Weather::drawIcon(int16_t x, int16_t y) {
+    _tft->fillRect(x, y, 32, 32, UI_NAVY);
+    const char *ic = data.icon.c_str();
+    const int16_t cx = x + 16, cy = y + 16;
+
+    if (strncmp(ic, "01", 2) == 0) {
+        // Sun: circle + 8 tick rays
+        _tft->fillCircle(cx, cy, 7, TFT_YELLOW);
+        for (int i = 0; i < 8; i++) {
+            float a = i * 0.7854f;  // 45 deg steps
+            _tft->drawLine(cx + (int)(10 * cosf(a)), cy + (int)(10 * sinf(a)),
+                           cx + (int)(14 * cosf(a)), cy + (int)(14 * sinf(a)), TFT_YELLOW);
+        }
+    } else if (strncmp(ic, "09", 2) == 0 || strncmp(ic, "10", 2) == 0 ||
+               strncmp(ic, "11", 2) == 0) {
+        // Rain/storm: cloud + slashes (lightning stroke for 11)
+        _tft->fillCircle(cx - 6, cy - 6, 6, TFT_LIGHTGREY);
+        _tft->fillCircle(cx + 4, cy - 8, 7, TFT_LIGHTGREY);
+        _tft->fillRect(cx - 10, cy - 6, 22, 6, TFT_LIGHTGREY);
+        if (ic[0] == '1' && ic[1] == '1') {
+            _tft->drawLine(cx, cy + 2, cx - 4, cy + 9, TFT_YELLOW);
+            _tft->drawLine(cx - 4, cy + 9, cx + 1, cy + 14, TFT_YELLOW);
+        } else {
+            for (int i = -1; i <= 1; i++)
+                _tft->drawLine(cx + i * 8, cy + 4, cx + i * 8 - 3, cy + 12, TFT_CYAN);
+        }
+    } else if (strncmp(ic, "13", 2) == 0) {
+        // Snow: asterisk
+        _tft->drawLine(cx - 8, cy, cx + 8, cy, TFT_WHITE);
+        _tft->drawLine(cx, cy - 8, cx, cy + 8, TFT_WHITE);
+        _tft->drawLine(cx - 6, cy - 6, cx + 6, cy + 6, TFT_WHITE);
+        _tft->drawLine(cx - 6, cy + 6, cx + 6, cy - 6, TFT_WHITE);
+    } else if (strncmp(ic, "50", 2) == 0) {
+        // Mist: horizontal lines
+        for (int i = 0; i < 4; i++)
+            _tft->drawFastHLine(x + 4, y + 8 + i * 6, 24, TFT_LIGHTGREY);
+    } else if (ic[0] != '\0') {
+        // Clouds (02/03/04)
+        _tft->fillCircle(cx - 6, cy - 2, 6, TFT_LIGHTGREY);
+        _tft->fillCircle(cx + 4, cy - 4, 7, TFT_LIGHTGREY);
+        _tft->fillRect(cx - 10, cy - 2, 22, 6, TFT_LIGHTGREY);
+    }
+}
+
+void Weather::drawValues() {
+    if (!_tft || !_panelDrawn) return;
+
+    const int16_t cx = PX + PW / 2;
     _tft->setTextDatum(MC_DATUM);
-    _tft->setTextColor(TFT_WHITE, TFT_BLACK);
+    _tft->setTextSize(1);
 
-    _tft->setTextSize(3);
-    _tft->drawString(configMgr.getConfig().weather_city, 120, 60);
+    if (!data.valid) {
+        _tft->setTextFont(2);
+        _tft->setTextColor(TFT_LIGHTGREY, UI_NAVY);
+        _tft->fillRect(PX + 3, 92, PW - 6, 24, UI_NAVY);
+        _tft->drawString("Fetching weather data...", cx, 104);
+        return;
+    }
 
-    _tft->setTextSize(4);
-    char tempStr[12];
-    snprintf(tempStr, sizeof(tempStr), "%.1f C", data.tempC);
-    _tft->drawString(tempStr, 120, 120);
+    char buf[32];
 
-    _tft->setTextSize(2);
-    _tft->drawString(data.description, 120, 170);
+    // City (field stops short of the icon cell on the right)
+    _tft->setTextFont(4);
+    _tft->fillRect(PX + 3, 48, PW - 46, 28, UI_NAVY);
+    _tft->setTextColor(TFT_YELLOW, UI_NAVY);
+    _tft->drawString(configMgr.getConfig().weather_city, cx - 18, 62);
 
-    char humStr[20];
-    snprintf(humStr, sizeof(humStr), "Humidity: %.0f%%", data.humidity);
-    _tft->drawString(humStr, 120, 200);
+    drawIcon(PX + PW - 40, 46);
+
+    // Temperature (Font4 has no degree glyph — apostrophe reads as °)
+    snprintf(buf, sizeof(buf), "%.1f'C", data.tempC);
+    _tft->setTextFont(4);
+    _tft->fillRect(PX + 3, 84, PW - 6, 30, UI_NAVY);
+    _tft->setTextColor(TFT_WHITE, UI_NAVY);
+    _tft->drawString(buf, cx, 99);
+
+    // Min/max — same v/^ convention as the status bar
+    _tft->setTextFont(2);
+    _tft->fillRect(PX + 3, 120, PW - 6, 20, UI_NAVY);
+    snprintf(buf, sizeof(buf), "v%.1f", data.tempMin);
+    const int16_t minW = _tft->textWidth(buf);
+    _tft->setTextColor(TFT_CYAN, UI_NAVY);
+    _tft->drawString(buf, cx - minW / 2 - 8, 130);
+    snprintf(buf, sizeof(buf), "^%.1f", data.tempMax);
+    _tft->setTextColor(UI_AMBER, UI_NAVY);
+    _tft->drawString(buf, cx + minW / 2 + 8, 130);
+
+    // Description
+    _tft->fillRect(PX + 3, 146, PW - 6, 20, UI_NAVY);
+    _tft->setTextColor(TFT_CYAN, UI_NAVY);
+    _tft->drawString(data.description, cx, 156);
+
+    // Humidity
+    snprintf(buf, sizeof(buf), "Humidity: %.0f%%", data.humidity);
+    _tft->fillRect(PX + 3, 172, PW - 6, 20, UI_NAVY);
+    _tft->setTextColor(TFT_LIGHTGREY, UI_NAVY);
+    _tft->drawString(buf, cx, 182);
+}
+
+void Weather::draw() {
+    if (!_tft) return;
+    drawPanel();
+    drawValues();
 }

@@ -1,8 +1,43 @@
 #include "popup_menu.h"
+#include "ui_theme.h"
 
 PopupMenu popupMenu;
 
 static const char *ITEM_LABELS[4] = { "Information", "Clear Cache", "Restart", "Close Menu" };
+
+// ── Open/close animations (retro expanding box) ───────────────────────────────
+
+void PopupMenu::animateOpen() {
+    if (!_tft) return;
+    constexpr uint8_t FRAMES = 5;
+    for (uint8_t i = 1; i <= FRAMES; i++) {
+        const int16_t w = 40 + (int16_t)(MW - 40) * i / FRAMES;
+        const int16_t h = 24 + (int16_t)(MH - 24) * i / FRAMES;
+        const int16_t x = MX + (MW - w) / 2;
+        const int16_t y = MY + (MH - h) / 2;
+        // Each frame fully covers the previous (growing) — no erase needed
+        _tft->fillRect(x, y, w, h, TFT_NAVY);
+        _tft->drawRect(x, y, w, h, TFT_WHITE);
+        delay(18);
+    }
+}
+
+void PopupMenu::animateClose() {
+    if (!_tft) return;
+    constexpr uint8_t FRAMES = 4;
+    for (uint8_t i = 1; i <= FRAMES; i++) {
+        const int16_t w = MW - (int16_t)(MW - 30) * i / FRAMES;
+        const int16_t h = MH - (int16_t)(MH - 14) * i / FRAMES;
+        const int16_t x = MX + (MW - w) / 2;
+        const int16_t y = MY + (MH - h) / 2;
+        // Erase full menu area, then draw the shrinking box
+        _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+        _tft->fillRect(x, y, w, h, TFT_NAVY);
+        _tft->drawRect(x, y, w, h, TFT_WHITE);
+        delay(16);
+    }
+    _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+}
 
 void PopupMenu::begin(TFT_eSPI *tft) {
     _tft = tft;
@@ -11,6 +46,7 @@ void PopupMenu::begin(TFT_eSPI *tft) {
 }
 
 void PopupMenu::show(uint32_t now) {
+    animateOpen();
     _visible      = true;
     _selected     = 0;
     _lastTouchMs  = now;
@@ -50,14 +86,8 @@ void PopupMenu::drawInfo(uint32_t now) {
     const int16_t ox = useSprite ? 0 : MX;
     const int16_t oy = useSprite ? 0 : MY;
 
-    // Outer frame (MS-DOS double-line border)
-    d->fillRect(ox, oy, MW, MH, TFT_NAVY);
-    d->drawRect(ox, oy, MW, MH, TFT_WHITE);
-    d->drawRect(ox + 2, oy + 2, MW - 4, MH - 4, TFT_LIGHTGREY);
-
-    // Title bar
-    d->fillRect(ox + 1, oy + 1, MW - 2, TITLE_H, TFT_DARKGREY);
-    d->drawFastHLine(ox + 1, oy + TITLE_H + 1, MW - 2, TFT_WHITE);
+    // Shared MS-DOS dialog chrome
+    uiDrawDosFrame(d, ox, oy, MW, MH, TITLE_H, "[ Information ]");
 
     // Countdown bar (same as main menu — depletes over 7s, returns to menu on expire)
     uint32_t elapsed   = now - _lastTouchMs;
@@ -66,12 +96,6 @@ void PopupMenu::drawInfo(uint32_t now) {
     d->fillRect(ox + 5, oy + 5, 50, 10, TFT_BLACK);
     if (fillW > 0)
         d->fillRect(ox + 5, oy + 5, fillW, 10, TFT_WHITE);
-
-    d->setTextFont(2);
-    d->setTextSize(1);
-    d->setTextDatum(MC_DATUM);
-    d->setTextColor(TFT_WHITE, TFT_DARKGREY);
-    d->drawString("[ Information ]", ox + MW / 2, oy + 1 + TITLE_H / 2);
 
     // Content area geometry
     const int16_t contentTop = oy + 1 + TITLE_H + 2;
@@ -154,14 +178,8 @@ void PopupMenu::draw(uint32_t now) {
     const int16_t ox = useSprite ? 0 : MX;
     const int16_t oy = useSprite ? 0 : MY;
 
-    // Outer frame with double-line border (MS-DOS style)
-    d->fillRect(ox, oy, MW, MH, TFT_NAVY);
-    d->drawRect(ox, oy, MW, MH, TFT_WHITE);
-    d->drawRect(ox + 2, oy + 2, MW - 4, MH - 4, TFT_LIGHTGREY);
-
-    // Title bar
-    d->fillRect(ox + 1, oy + 1, MW - 2, TITLE_H, TFT_DARKGREY);
-    d->drawFastHLine(ox + 1, oy + TITLE_H + 1, MW - 2, TFT_WHITE);
+    // Shared MS-DOS dialog chrome
+    uiDrawDosFrame(d, ox, oy, MW, MH, TITLE_H, "[ MENU ]");
 
     // Countdown bar (left side of title bar)
     uint32_t elapsed   = now - _lastTouchMs;
@@ -171,13 +189,6 @@ void PopupMenu::draw(uint32_t now) {
     d->fillRect(ox + 5, oy + 5, 50, 10, TFT_BLACK);
     if (fillW > 0)
         d->fillRect(ox + 5, oy + 5, fillW, 10, TFT_WHITE);
-
-    // Centred title
-    d->setTextFont(2);
-    d->setTextSize(1);
-    d->setTextDatum(MC_DATUM);
-    d->setTextColor(TFT_WHITE, TFT_DARKGREY);
-    d->drawString("[ MENU ]", ox + MW / 2, oy + 1 + TITLE_H / 2);
 
     // Determine hold progress in dots
     uint32_t holdMs  = (_pressStartMs > 0 && _lastPressed) ? (now - _pressStartMs) : 0;
@@ -229,7 +240,7 @@ PopupMenu::Action PopupMenu::tick(bool pressed, uint32_t now) {
             uint32_t heldMs = now - _pressStartMs;
             if (heldMs >= INFO_HOLD_MS) {
                 // 3s hold → close everything
-                _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+                animateClose();
                 _showingInfo = false;
                 _visible     = false;
                 _lastPressed = pressed;
@@ -288,17 +299,17 @@ PopupMenu::Action PopupMenu::tick(bool pressed, uint32_t now) {
                     result = Action::INFO;
                     break;
                 case 1:
-                    _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+                    animateClose();
                     _visible = false;
                     result = Action::CLEAR_CACHE;
                     break;
                 case 2:
-                    _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+                    animateClose();
                     _visible = false;
                     result = Action::RESTART;
                     break;
                 default:
-                    _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+                    animateClose();
                     _visible = false;
                     result = Action::CLOSE;
                     break;
@@ -313,7 +324,7 @@ PopupMenu::Action PopupMenu::tick(bool pressed, uint32_t now) {
 
     // Auto-dismiss after 7 seconds of no touch
     if (_visible && (now - _lastTouchMs) >= AUTO_DISMISS_MS) {
-        _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+        animateClose();
         _visible = false;
         result = Action::CLOSE;
     }

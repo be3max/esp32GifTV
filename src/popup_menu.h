@@ -28,6 +28,8 @@ public:
 private:
     void draw(uint32_t now);
     void drawInfo(uint32_t now);
+    void animateOpen();   // expanding-box reveal, ~90 ms, blocking
+    void animateClose();  // shrinking-box dismiss, ~65 ms, ends black
 
     TFT_eSPI    *_tft = nullptr;
     TFT_eSprite *_spr = nullptr;

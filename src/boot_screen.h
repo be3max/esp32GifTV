@@ -48,8 +48,6 @@ private:
     uint16_t   _cursorX     = 0;  // x position of blinking cursor
     bool       _cursorOn    = true;
 
-    static constexpr uint16_t COLOR_DIALOG_BG = 0x2124;  // dark navy-grey
-
     void drawTag(uint16_t x, uint16_t y, Tag tag);
     void setFont();             // always call before drawing text
 
@@ -64,6 +62,7 @@ private:
     static constexpr uint8_t  LINE_H     = 17;   // px per POST line (font2 16px + 1px gap)
     static constexpr uint8_t  MAX_LINES  = 11;   // lines before wrapping
     static constexpr uint8_t  MARGIN_X   = 3;
+    static constexpr uint8_t  POST_LINE_DELAY_MS = 35;  // typewriter pacing per POST line
 };
 
 extern BootScreen bootScreen;

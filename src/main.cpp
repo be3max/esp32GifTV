@@ -15,6 +15,7 @@
 #include "status_bar.h"
 #include "boot_screen.h"
 #include "popup_menu.h"
+#include "ui_theme.h"
 
 // ── Hardware (NM-TV-154) ─────────────────────────────────────────────────────
 #define TFT_POWER_PIN  21   // Active LOW — P-FET gate powering the display
@@ -307,7 +308,7 @@ void loop() {
             gifPlayer.clearCacheOnBoot();
             gifPlayer.clearListCache();
             bootScreen.showDialog("[ Cache Manager ]", "Cache cleared", 2000);
-            tft.fillScreen(TFT_BLACK);
+            uiCrtCollapse(&tft);
             gifPlayer.fetchAndPlay();
         } else if (menuAct == PopupMenu::Action::RESTART) {
             Serial.println("[MENU] Restart");
@@ -315,8 +316,12 @@ void loop() {
         } else if (menuAct == PopupMenu::Action::INFO) {
             Serial.println("[MENU] Info");
             popupMenu.showInfo(WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        } else if (menuAct == PopupMenu::Action::CLOSE) {
+            // Menu covered the centre of the screen — repaint static modes
+            if (currentMode == AppMode::CLOCK)        clockDisplay.forceRedraw();
+            else if (currentMode == AppMode::WEATHER) weather.draw();
         }
-        // Action::CLOSE or NONE → menu self-dismisses or continues
+        // Action::NONE → menu continues
     } else {
         // Normal button handling (when menu not visible)
         if (btnEvt == BtnEvent::HOLD) {
@@ -336,11 +341,13 @@ void loop() {
         if (cfgMode != currentMode) {
             if (currentMode == AppMode::GIF) gifPlayer.stop();
             currentMode = cfgMode;
-            tft.fillScreen(TFT_BLACK);
+            uiCrtCollapse(&tft);
             gifPlayer.setClipHeight(cfg.display_mode == DISPLAY_MODE_GIF_ONLY ? TFT_HEIGHT : STATUS_BAR_Y);
             if (currentMode == AppMode::CLOCK) {
                 int8_t tzOffset = parseTimezoneOffset(cfg.timezone);
                 clockDisplay.begin(&tft, "pool.ntp.org", tzOffset);
+            } else if (currentMode == AppMode::WEATHER) {
+                weather.draw();  // panel + "Fetching..." until first fetch lands
             }
         }
     }
@@ -378,17 +385,19 @@ void loop() {
 
             case AppMode::CLOCK:
                 clockDisplay.update();
-                delay(100);
+                delay(25);
                 break;
 
             case AppMode::WEATHER: {
                 uint32_t now = millis();
+                // Non-blocking: fetch on the 10-min timer, repaint values only
+                // when fresh data arrives. Button stays responsive.
                 if (!weather.data.valid || (now - weatherFetchMs > 10UL * 60000UL)) {
-                    weather.fetch(cfg.weather_api_key, cfg.weather_city);
+                    if (weather.fetch(cfg.weather_api_key, cfg.weather_city)) {
+                        weather.drawValues();
+                    }
                     weatherFetchMs = now;
                 }
-                weather.draw();
-                delay(30000);
                 break;
             }
         }

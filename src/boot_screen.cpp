@@ -1,4 +1,5 @@
 #include "boot_screen.h"
+#include "ui_theme.h"
 #include <cmath>
 
 BootScreen bootScreen;
@@ -41,22 +42,7 @@ void BootScreen::drawTag(uint16_t x, uint16_t y, Tag tag) {
 // Caller draws its own content in the blue area below the separator.
 void BootScreen::drawDialogFrame(uint8_t bx, uint8_t by, uint8_t bw, uint8_t bh,
                                  uint8_t titleH, const char *title) {
-    // Dark content fill
-    _tft->fillRect(bx + 1, by + 1, bw - 2, bh - 2, COLOR_DIALOG_BG);
-    // Outer white border + inner light-grey inset (double-line effect)
-    _tft->drawRect(bx,     by,     bw,     bh,     TFT_WHITE);
-    _tft->drawRect(bx + 2, by + 2, bw - 4, bh - 4, TFT_LIGHTGREY);
-    // Title bar
-    _tft->fillRect(bx + 1, by + 1, bw - 2, titleH, TFT_DARKGREY);
-    _tft->drawFastHLine(bx + 1, by + 1 + titleH, bw - 2, TFT_WHITE);
-    // Title text centred in title bar
-    setFont();
-    _tft->setTextColor(TFT_WHITE, TFT_DARKGREY);
-    _tft->setTextDatum(MC_DATUM);
-    _tft->drawString(title, bx + bw / 2, by + 1 + titleH / 2);
-    // Dark blue content area
-    uint8_t contentY = by + 1 + titleH + 1;
-    _tft->fillRect(bx + 1, contentY, bw - 2, bh - titleH - 3, TFT_NAVY);
+    uiDrawDosFrame(_tft, bx, by, bw, bh, titleH, title);
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -173,7 +159,7 @@ void BootScreen::postLine(const char *label, Tag tag) {
     _scrollRow++;
 
     // Slow boot animation — retro BIOS effect
-    delay(100);
+    delay(POST_LINE_DELAY_MS);
 }
 
 void BootScreen::updateLastTag(Tag tag) {
@@ -216,10 +202,7 @@ void BootScreen::showConnectedDialog(const char *ipStr, int rssi, uint32_t durat
     constexpr uint8_t btnW = 70, btnH = 18;
     const uint8_t btnX = bx + (bw - btnW) / 2;
     const uint8_t btnY = by + bh - btnH - 8;
-    _tft->fillRect(btnX, btnY, btnW, btnH, TFT_LIGHTGREY);
-    _tft->drawRect(btnX, btnY, btnW, btnH, TFT_WHITE);
-    _tft->setTextColor(TFT_BLACK, TFT_LIGHTGREY);
-    _tft->drawString("[ OK ]", btnX + btnW / 2, btnY + btnH / 2);
+    uiDrawDosButton(_tft, btnX, btnY, btnW, btnH, "[ OK ]");
 
     delay(durationMs);
 }
@@ -240,10 +223,7 @@ void BootScreen::showDialog(const char *title, const char *body, uint32_t durati
     constexpr uint8_t btnW = 70, btnH = 18;
     const uint8_t btnX = bx + (bw - btnW) / 2;
     const uint8_t btnY = by + bh - btnH - 6;
-    _tft->fillRect(btnX, btnY, btnW, btnH, TFT_LIGHTGREY);
-    _tft->drawRect(btnX, btnY, btnW, btnH, TFT_WHITE);
-    _tft->setTextColor(TFT_BLACK, TFT_LIGHTGREY);
-    _tft->drawString("[ OK ]", btnX + btnW / 2, btnY + btnH / 2);
+    uiDrawDosButton(_tft, btnX, btnY, btnW, btnH, "[ OK ]");
 
     delay(durationMs);
 }

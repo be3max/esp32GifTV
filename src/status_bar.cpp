@@ -1,13 +1,14 @@
 #include "status_bar.h"
 #include "weather.h"
 #include "config_manager.h"
+#include "ui_theme.h"
 #include <ctime>
 
-// MS-DOS CGA-style palette
-static constexpr uint16_t COL_DARK_YELLOW = 0x7BE0;  // CGA dark yellow  (TFT_OLIVE)
-static constexpr uint16_t COL_DARK_BLUE   = 0x000F;  // CGA dark blue    (TFT_NAVY)
-static constexpr uint16_t COL_DARK_RED    = 0x7800;  // CGA dark red     (TFT_MAROON)
-static constexpr uint16_t COL_DARK_GRAY   = 0x39C7;  // CGA dark grey
+// MS-DOS CGA-style palette (shared theme)
+static constexpr uint16_t COL_DARK_YELLOW = UI_CGA_DARKYELLOW;
+static constexpr uint16_t COL_DARK_BLUE   = UI_CGA_DARKBLUE;
+static constexpr uint16_t COL_DARK_RED    = UI_CGA_DARKRED;
+static constexpr uint16_t COL_DARK_GRAY   = UI_CGA_DARKGRAY;
 
 StatusBar statusBar;
 
