@@ -107,14 +107,22 @@ static void gifFileClose(void *handle) {
     f->close();
     delete f;
 }
+// AnimatedGIF requires read/seek callbacks to maintain pFile->iPos — the
+// decoder derives every frame's start offset from it. Without this, frame 2+
+// parse from the wrong position and the GIF freezes on its first frame.
 static int32_t gifFileRead(GIFFILE *pFile, uint8_t *buf, int32_t len) {
     fs::File *f = (fs::File *)pFile->fHandle;
-    return (int32_t)f->read(buf, (size_t)len);
+    int32_t n = (int32_t)f->read(buf, (size_t)len);
+    pFile->iPos = (int32_t)f->position();
+    return n;
 }
 static int32_t gifFileSeek(GIFFILE *pFile, int32_t pos) {
+    if (pos < 0) pos = 0;
+    else if (pos >= pFile->iSize) pos = pFile->iSize - 1;  // match library's seekFile clamp
     fs::File *f = (fs::File *)pFile->fHandle;
     f->seek((uint32_t)pos);
-    return (int32_t)f->position();
+    pFile->iPos = (int32_t)f->position();
+    return pFile->iPos;
 }
 
 // ── Cache helper methods ──────────────────────────────────────────────────────
@@ -334,9 +342,9 @@ void GifPlayer::tick() {
                 }
                 _gif.reset();
             } else {
-                // File-callback mode: _gif.reset() is broken in AnimatedGIF v2.x
-                // (seeks to 0 but does not fully re-init the decoder), so use an
-                // explicit close + reopen instead.
+                // File-callback mode: loop via explicit close + reopen. reset()
+                // would also work now that the file callbacks maintain iPos, but
+                // reopen keeps the frame buffer lifecycle simple.
                 // Free the frame buffer via AnimatedGIF's own API first — calling
                 // _gif.close() with a live frame buffer risks a double-free.
                 if (_frameBuf) {
