@@ -71,6 +71,37 @@ struct CacheMeta {
 };
 static CacheMeta s_cacheMeta = {0, 0, 0};
 
+// ── Session blacklist of bad URLs ──────────────────────────────────────────────
+// URLs that were too big to fit flash or failed to decode are remembered (by
+// hash) for the rest of the session so we never re-download them. RAM-only —
+// cleared on reboot, which is fine: a transient server hiccup gets a fresh try.
+static constexpr uint8_t BLACKLIST_MAX = 16;
+static uint32_t s_blacklist[BLACKLIST_MAX] = {0};
+static uint8_t  s_blacklistCount = 0;
+static char     s_currentUrl[256] = {0};   // URL backing the current /tmp.gif
+
+static uint32_t urlHash(const char *s) {
+    uint32_t h = 5381;
+    while (*s) h = ((h << 5) + h) ^ (uint8_t)*s++;   // djb2
+    return h;
+}
+static bool urlBlacklisted(const char *url) {
+    if (!url || !*url) return false;
+    uint32_t h = urlHash(url);
+    for (uint8_t i = 0; i < s_blacklistCount; i++)
+        if (s_blacklist[i] == h) return true;
+    return false;
+}
+static void urlBlacklist(const char *url) {
+    if (!url || !*url || urlBlacklisted(url)) return;
+    uint32_t h = urlHash(url);
+    if (s_blacklistCount < BLACKLIST_MAX)
+        s_blacklist[s_blacklistCount++] = h;       // ring-evict oldest once full
+    else
+        s_blacklist[h % BLACKLIST_MAX] = h;
+    Serial.printf("[GIF] Blacklisted %s\n", url);
+}
+
 // ── Frame buffer helpers ──────────────────────────────────────────────────────
 // GIF data is streamed to LittleFS (/tmp.gif) so no large heap block is needed
 // during the download phase.  After the HTTP connection closes and TLS buffers
@@ -78,7 +109,16 @@ static CacheMeta s_cacheMeta = {0, 0, 0};
 // transparency compositing via AnimatedGIF's DrawNewPixels mode.
 
 static constexpr size_t FB_SIZE       = 66 * 1024;   // 67,584 B — safely above 256×256 (65,536)
-static constexpr size_t MAX_GIF_BYTES = 100 * 1024;
+// Hard ceiling on download size. GIFs stream to flash and play in file-callback
+// mode (no full-file heap load), so the limit is LittleFS room, not RAM — well
+// above the old 100 KB cap. Oversized canvases simply skip the frame buffer and
+// fall back to raw stretch rendering.
+static constexpr size_t MAX_GIF_BYTES = 500 * 1024;
+// GIFs larger than this are played but NOT copied into the on-flash cache — a
+// single fat file would otherwise crowd out many small ones (cache cap 500 KB).
+static constexpr size_t CACHE_MAX_GIF_BYTES = 120 * 1024;
+// Flash headroom kept free when streaming a download to /tmp.gif.
+static constexpr size_t FLASH_MARGIN_BYTES  = 16 * 1024;
 
 static const char *RANDOM_GIF_API = "https://api.thecatapi.com/v1/images/search?mime_types=gif&limit=1";
 static const char *GIF_TMP_PATH   = "/tmp.gif";
@@ -188,6 +228,15 @@ bool GifPlayer::cacheCopyFromTmp() {
     if (!src) return false;
 
     uint32_t fileSize = src.size();
+
+    // Don't cache fat GIFs — one would crowd out many small ones (and risks
+    // overflowing the partition alongside the next /tmp.gif download).
+    if (fileSize > CACHE_MAX_GIF_BYTES) {
+        src.close();
+        Serial.printf("[GIF] Not caching (too big: %u B)\n", fileSize);
+        return false;
+    }
+
     String dstPath = String(CACHE_FILE_PREFIX) + String(s_cacheMeta.count) + ".gif";
 
     fs::File dst = LittleFS.open(dstPath, "w");
@@ -281,6 +330,14 @@ void GifPlayer::tick() {
         return;
     }
 
+    // Live countdown refresh while a retry is pending. Runs regardless of
+    // _playing — the skip banner / no-internet toast are shown with playback
+    // stopped, so gating this behind _playing froze the countdown on screen.
+    if (_retryAfterMs != 0 && now < _retryAfterMs) {
+        if (_failBanner && (now - _failShownMs) >= 1000)        drawFailBanner(false);
+        else if (_toastVisible && (now - _toastShownMs) >= 1000) drawToast();
+    }
+
     // Periodic refresh
     if (_hasGif && _playing &&
         (now - _lastFetchMs >= (uint32_t)_refreshSec * 1000)) {
@@ -314,11 +371,6 @@ void GifPlayer::tick() {
                 s_inTransition = false;
                 Serial.println("[GIF] Block dissolve transition complete");
             }
-        }
-
-        // Refresh toast countdown every ~1s while retry is pending
-        if (_retryAfterMs != 0 && _toastVisible && (now - _toastShownMs) >= 1000) {
-            drawToast();
         }
 
         if (result > 0) {
@@ -434,8 +486,9 @@ void GifPlayer::openAndPlayFile(const char *path) {
         _hasGif      = true;
         _lastFetchMs = millis();
 
-        // Clear any pending failure toast
+        // Clear any pending failure toast / skip banner
         clearToast();
+        _failBanner = false;
 
         // Cache CRT setting for scanline callback
         s_crtEnabled = configMgr.getConfig().gif_crt_enabled;
@@ -481,6 +534,15 @@ void GifPlayer::openAndPlayFile(const char *path) {
         s_inTransition = false;  // no callbacks will fire, clear stale state
         s_crtEnabled   = false;  // no callbacks will fire, clear stale state
         Serial.printf("[GIF] open failed, err=%d\n", _gif.getLastError());
+
+        // Fresh downloads that won't decode: blacklist the URL, show the skip
+        // banner, and let tick() advance after the countdown. (Cache files have
+        // no URL to blacklist, so they just fall through to a plain retry.)
+        if (strcmp(path, GIF_TMP_PATH) == 0 && s_currentUrl[0]) {
+            flagFailedGif(String(s_currentUrl), 0, "Cannot decode");
+            _retryAfterMs = millis() + 10000;
+            drawFailBanner(true);
+        }
     }
 }
 
@@ -525,6 +587,17 @@ void GifPlayer::fetchAndPlay() {
     }
 
     // ─── Normal download path ────────────────────────────────────────────────
+    // Reached only when no cached GIF served us above. If the link is down,
+    // skip the network entirely: blocking on DNS/TLS against a dead AP freezes
+    // tick() (and the toast countdown). Arm the retry and let the WiFi watchdog
+    // re-associate — playback resumes automatically once internet returns.
+    if (WiFi.status() != WL_CONNECTED) {
+        Serial.println("[GIF] No WiFi — retry in 10 s");
+        _retryAfterMs = millis() + 10000;
+        drawToast();
+        return;
+    }
+
     String gifUrl;
 
     // Determine which URL list to use
@@ -562,11 +635,34 @@ void GifPlayer::fetchAndPlay() {
         return;
     }
 
+    // Skip URLs blacklisted this session (oversized / undecodable). Try a few
+    // alternates so one bad GIF in the list doesn't wedge playback on it.
+    for (uint8_t attempt = 0; attempt < 8 && urlBlacklisted(gifUrl.c_str()); attempt++) {
+        if (urlCount > 1) {
+            uint8_t idx;
+            do { idx = random(0, urlCount); } while (idx == _gifIndex);
+            _gifIndex = idx;
+            gifUrl = urlList[idx];
+        } else if (urlCount == 1) {
+            break;                                  // only one URL, and it's blacklisted
+        } else if (!fetchRandomGifUrl(gifUrl)) {
+            break;
+        }
+    }
+    if (urlBlacklisted(gifUrl.c_str())) {
+        Serial.println("[GIF] Only blacklisted candidates — retry in 10 s");
+        _retryAfterMs = millis() + 10000;
+        return;
+    }
+    strlcpy(s_currentUrl, gifUrl.c_str(), sizeof(s_currentUrl));
+
     // Stream GIF to flash — HTTP + TLS operate with no large heap block held.
     if (!streamGifToFlash(gifUrl)) {
+        // streamGifToFlash sets up the skip banner itself for too-large / no-space
+        // failures; everything else (HTTP error, empty body) falls back to the toast.
         Serial.println("[GIF] Download failed — retry in 10 s");
         _retryAfterMs = millis() + 10000;
-        drawToast();
+        if (_failBanner) drawFailBanner(true); else drawToast();
         return;
     }
 
@@ -649,6 +745,51 @@ void GifPlayer::clearToast() {
     if (!_tft || !_toastVisible) return;
     _tft->fillRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_BLACK);
     _toastVisible = false;
+}
+
+// ── Oversized / undecodable GIF skip banner ─────────────────────────────────
+// full=true repaints the whole notice (filename, reason, size, "skipping…");
+// full=false repaints only the countdown cell, called once a second from tick()
+// so the timer visibly ticks down instead of freezing.
+void GifPlayer::drawFailBanner(bool full) {
+    if (!_tft) return;
+
+    uint32_t now      = millis();
+    uint32_t secsLeft = (_retryAfterMs > now) ? ((_retryAfterMs - now) + 999) / 1000 : 0;
+    const int cx = _tft->width() / 2;
+    const int cy = _tft->height() / 2;
+
+    if (full) {
+        _tft->fillScreen(TFT_BLACK);
+        _tft->setTextFont(1);
+        _tft->setTextSize(1);
+        _tft->setTextDatum(MC_DATUM);
+
+        _tft->setTextColor(TFT_YELLOW, TFT_BLACK);
+        _tft->drawString(_failName, cx, cy - 45);
+        _tft->drawString(_failMsg,  cx, cy - 25);
+
+        _tft->setTextColor(TFT_WHITE, TFT_BLACK);
+        if (_failBytes > 0) {
+            _tft->drawString(String(_failBytes) + " B", cx, cy - 5);
+            _tft->drawString("(max " + String(MAX_GIF_BYTES / 1024) + " KB)", cx, cy + 15);
+        }
+        _tft->setTextColor(TFT_DARKGREY, TFT_BLACK);
+        _tft->drawString("skipping to next", cx, cy + 40);
+    }
+
+    // Live countdown cell — repaint just this strip each second.
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%us", (unsigned)secsLeft);
+    _tft->fillRect(cx - 30, cy + 58, 60, 16, TFT_BLACK);
+    _tft->setTextFont(1);
+    _tft->setTextSize(1);
+    _tft->setTextDatum(MC_DATUM);
+    _tft->setTextColor(TFT_ORANGE, TFT_BLACK);
+    _tft->drawString(buf, cx, cy + 65);
+
+    _failShownMs = now;
+    _failBanner  = true;
 }
 
 uint8_t GifPlayer::getCacheCount() {
@@ -789,7 +930,22 @@ bool GifPlayer::fetchRandomGifUrl(String &outUrl) {
 
 // ── Stream GIF download to LittleFS ──────────────────────────────────────────
 
+// Stage the skip-banner fields for a GIF we are giving up on, blacklist it, and
+// let the caller arm the retry timer + draw the banner.
+void GifPlayer::flagFailedGif(const String &url, int bytes, const char *reason) {
+    int lastSlash = url.lastIndexOf('/');
+    String filename = (lastSlash >= 0) ? url.substring(lastSlash + 1) : url;
+    if (filename.length() > 30) filename = filename.substring(0, 27) + "...";
+    strlcpy(_failName, filename.c_str(), sizeof(_failName));
+    strlcpy(_failMsg,  reason,           sizeof(_failMsg));
+    _failBytes  = bytes;
+    _failBanner = true;
+    urlBlacklist(url.c_str());
+}
+
 bool GifPlayer::streamGifToFlash(const String &url) {
+    _failBanner = false;   // cleared unless this call decides the GIF is unusable
+
     WiFiClientSecure sec;
     sec.setInsecure();
 
@@ -813,27 +969,20 @@ bool GifPlayer::streamGifToFlash(const String &url) {
     if (contentLen > (int)MAX_GIF_BYTES) {
         Serial.printf("[GIF] Too large: %d B\n", contentLen);
         http.end();
-        if (_tft) {
-            // Extract filename from URL (last part after /)
-            int lastSlash = url.lastIndexOf('/');
-            String filename = (lastSlash >= 0) ? url.substring(lastSlash + 1) : url;
-            // Truncate filename if too long
-            if (filename.length() > 30) filename = filename.substring(0, 27) + "...";
-
-            _tft->fillScreen(TFT_BLACK);
-            _tft->setTextFont(1);
-            _tft->setTextSize(1);
-            _tft->setTextDatum(MC_DATUM);
-            _tft->setTextColor(TFT_YELLOW, TFT_BLACK);
-            _tft->drawString(filename, _tft->width() / 2, _tft->height() / 2 - 30);
-            _tft->drawString("GIF too large", _tft->width() / 2, _tft->height() / 2 - 10);
-            _tft->setTextColor(TFT_WHITE, TFT_BLACK);
-            _tft->setTextSize(1);
-            _tft->drawString(String(contentLen) + " B", _tft->width() / 2, _tft->height() / 2 + 10);
-            _tft->drawString("(max " + String(MAX_GIF_BYTES / 1024) + " KB)",
-                            _tft->width() / 2, _tft->height() / 2 + 30);
-        }
+        flagFailedGif(url, contentLen, "GIF too large");
         return false;
+    }
+
+    // Guard LittleFS room — a known content length that won't fit (e.g. cache is
+    // nearly full) is skipped just like an oversized GIF rather than half-writing.
+    if (contentLen > 0) {
+        size_t freeB = LittleFS.totalBytes() - LittleFS.usedBytes();
+        if ((size_t)contentLen + FLASH_MARGIN_BYTES > freeB) {
+            Serial.printf("[GIF] No flash room: need %d B, free %u B\n", contentLen, freeB);
+            http.end();
+            flagFailedGif(url, contentLen, "No flash space");
+            return false;
+        }
     }
 
     fs::File f = LittleFS.open(GIF_TMP_PATH, "w");

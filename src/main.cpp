@@ -244,6 +244,12 @@ void setup() {
     bootScreen.updateLastTag(BootScreen::Tag::OK);
     Serial.printf("[WiFi] connected, IP: %s\n", WiFi.localIP().toString().c_str());
 
+    // Keep the STA link alive across AP/router outages. WiFiManager only runs
+    // at boot, so without this the radio stays disassociated when the AP drops
+    // and never re-joins when it returns — every fetch then fails forever.
+    WiFi.setAutoReconnect(true);
+    WiFi.persistent(true);
+
     // Seed random number generator for better GIF URL selection randomness
     randomSeed(time(NULL) ^ WiFi.RSSI() ^ millis());
 
@@ -284,6 +290,26 @@ void setup() {
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
     webPortal.update();
+
+    // ── WiFi reconnect watchdog ────────────────────────────────────────────────
+    // Non-blocking: if the link has been down for a few seconds, kick a reconnect.
+    // setAutoReconnect usually handles this, but a manual nudge recovers from cases
+    // where the core gives up (e.g. AP gone long enough to drop the saved BSSID).
+    {
+        static uint32_t s_wifiDownSince = 0;
+        static uint32_t s_lastReconnect = 0;
+        uint32_t now = millis();
+        if (WiFi.status() != WL_CONNECTED) {
+            if (s_wifiDownSince == 0) s_wifiDownSince = now;
+            if (now - s_wifiDownSince > 5000 && now - s_lastReconnect > 5000) {
+                Serial.println("[WiFi] link down — reconnecting");
+                WiFi.reconnect();
+                s_lastReconnect = now;
+            }
+        } else {
+            s_wifiDownSince = 0;
+        }
+    }
 
     if (webPortal.pendingRestart) {
         delay(500);
