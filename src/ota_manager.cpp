@@ -1,6 +1,7 @@
 #include "ota_manager.h"
 #include "ui_theme.h"
 #include "boot_screen.h"
+#include "gif_player.h"   // free GIF heap before TLS to GitHub
 
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -56,6 +57,13 @@ OTAManager::Result OTAManager::checkNow(bool interactive) {
         bootScreen.showDialog("[ OTA Update ]", "No WiFi connection", 3000);
         return Result::FAILED;
     }
+
+    // Free the GIF buffers/canvas (~100 KB+) so the TLS handshake to GitHub has a
+    // large contiguous heap block. Without this, fetch fails with "Version check
+    // failed" once GIF playback has fragmented the heap.
+    gifPlayer.stop();
+    Serial.printf("[OTA] free heap before check=%u (largest block=%u)\n",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     _tft->fillScreen(TFT_BLACK);
     drawFrame();
@@ -219,7 +227,10 @@ bool OTAManager::fetchLatestVersion(char *outTag, size_t tagLen) {
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[OTA] API HTTP %d\n", code);
+        // Negative codes are HTTPClient/TLS errors (e.g. -1 connection refused),
+        // usually heap/handshake failures; positive are HTTP status (403 rate limit).
+        Serial.printf("[OTA] API HTTP %d (%s) heap=%u\n",
+                      code, HTTPClient::errorToString(code).c_str(), ESP.getFreeHeap());
         http.end();
         return false;
     }
@@ -264,8 +275,11 @@ void OTAManager::performUpdate(const char *tag) {
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        char msg[32];
-        snprintf(msg, sizeof(msg), "Download HTTP %d", code);
+        Serial.printf("[OTA] download HTTP %d (%s) heap=%u\n",
+                      code, HTTPClient::errorToString(code).c_str(), ESP.getFreeHeap());
+        char msg[40];
+        if (code < 0) snprintf(msg, sizeof(msg), "Connect failed (%d)", code);
+        else          snprintf(msg, sizeof(msg), "Download HTTP %d", code);
         drawResult(false, msg);
         delay(5000);
         http.end();
@@ -273,10 +287,25 @@ void OTAManager::performUpdate(const char *tag) {
     }
 
     int totalBytes = http.getSize();
-    Serial.printf("[OTA] size=%d\n", totalBytes);
+    size_t freeSpace = ESP.getFreeSketchSpace();   // size of the inactive OTA slot
+    Serial.printf("[OTA] size=%d  otaSlot=%u  heap=%u\n",
+                  totalBytes, (unsigned)freeSpace, ESP.getFreeHeap());
+
+    // Guard: a bogus/oversized Content-Length is a download problem, not a full
+    // flash. Report it honestly instead of the misleading "No flash space".
+    if (totalBytes > 0 && (size_t)totalBytes > freeSpace) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Bad size %d B", totalBytes);
+        Serial.printf("[OTA] image (%d) exceeds OTA slot (%u)\n", totalBytes, (unsigned)freeSpace);
+        drawResult(false, msg);
+        delay(5000);
+        http.end();
+        return;
+    }
 
     if (!Update.begin(totalBytes > 0 ? (size_t)totalBytes : UPDATE_SIZE_UNKNOWN)) {
-        drawResult(false, "No flash space");
+        Serial.printf("[OTA] Update.begin failed: %s\n", Update.errorString());
+        drawResult(false, Update.errorString());
         delay(5000);
         http.end();
         return;
