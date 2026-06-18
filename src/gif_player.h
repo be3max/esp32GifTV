@@ -46,7 +46,6 @@ private:
     static int     _prevFrameH;
     static uint8_t _prevDisposal;
 
-    bool    fetchRandomGifUrl(String &outUrl);
     bool    streamGifToFlash(const String &url);
     bool    fetchGifList(const String &url);  // download & parse URL list file
 
@@ -63,10 +62,11 @@ private:
 
     // ── Connection-problem notice (was "no-internet toast") ───────────────────
     // Reason shown on the notice so the user knows *why* playback stalled:
-    //   NO_WIFI  — not associated with an access point
-    //   SERVER   — WiFi up, but the GIF source/API did not respond
-    //   DOWNLOAD — WiFi up, transfer started but failed/incomplete
-    enum class ToastReason : uint8_t { NO_WIFI, SERVER, DOWNLOAD };
+    //   NO_WIFI    — not associated with an access point
+    //   SERVER     — WiFi up, but the GIF source/list did not respond
+    //   DOWNLOAD   — WiFi up, transfer started but failed/incomplete
+    //   LIST_EMPTY — no GIF list configured in the web portal
+    enum class ToastReason : uint8_t { NO_WIFI, SERVER, DOWNLOAD, LIST_EMPTY };
     ToastReason _toastReason  = ToastReason::NO_WIFI;
     uint32_t  _toastShownMs  = 0;              // millis() when toast was last drawn
     bool      _toastVisible  = false;          // true while retry-pending notice is shown

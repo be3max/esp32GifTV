@@ -120,7 +120,6 @@ static constexpr size_t CACHE_MAX_GIF_BYTES = 120 * 1024;
 // Flash headroom kept free when streaming a download to /tmp.gif.
 static constexpr size_t FLASH_MARGIN_BYTES  = 16 * 1024;
 
-static const char *RANDOM_GIF_API = "https://api.thecatapi.com/v1/images/search?mime_types=gif&limit=1";
 static const char *GIF_TMP_PATH   = "/tmp.gif";
 
 // gifAlloc/gifFree — called by AnimatedGIF's allocFrameBuf/freeFrameBuf.
@@ -630,11 +629,23 @@ void GifPlayer::fetchAndPlay() {
         _gifIndex = idx;
         gifUrl = urlList[idx];
         Serial.printf("[GIF] URL #%u (random, avoid repeat): %s\n", idx, gifUrl.c_str());
-    } else if (!fetchRandomGifUrl(gifUrl)) {
-        if (playFromCacheFallback()) return;   // WiFi up but API failed — use cache
-        Serial.println("[GIF] API failed — retry in 10 s");
+    } else if (cfg.gif_use_list_url && cfg.gif_list_url[0] != '\0') {
+        // User configured a URL list but it failed to load (empty/HTTP error).
+        // Do NOT fall back to the random cat API — that serves off-list, oversized
+        // GIFs. Use cache if available, otherwise retry fetching the list.
+        if (playFromCacheFallback()) return;
+        Serial.println("[GIF] List unavailable — retry in 10 s");
         _retryAfterMs  = millis() + 10000;
         _toastReason   = ToastReason::SERVER;
+        drawToast();
+        return;
+    } else {
+        // No GIF list configured (and no built-in URLs). Tell the user to set one
+        // in the web portal instead of pulling random off-list GIFs.
+        if (playFromCacheFallback()) return;
+        Serial.println("[GIF] No GIF list configured — retry in 10 s");
+        _retryAfterMs  = millis() + 10000;
+        _toastReason   = ToastReason::LIST_EMPTY;
         drawToast();
         return;
     }
@@ -647,10 +658,8 @@ void GifPlayer::fetchAndPlay() {
             do { idx = random(0, urlCount); } while (idx == _gifIndex);
             _gifIndex = idx;
             gifUrl = urlList[idx];
-        } else if (urlCount == 1) {
-            break;                                  // only one URL, and it's blacklisted
-        } else if (!fetchRandomGifUrl(gifUrl)) {
-            break;
+        } else {
+            break;                                  // single/empty list, nothing to swap to
         }
     }
     if (urlBlacklisted(gifUrl.c_str())) {
@@ -708,7 +717,7 @@ void GifPlayer::stop() {
 // ── Connection-problem notice (full panel, replaces the old tiny toast) ─────
 
 static constexpr int TOAST_X = 16;
-static constexpr int TOAST_Y = 44;
+static constexpr int TOAST_Y = 49;
 static constexpr int TOAST_W = 208;
 static constexpr int TOAST_H = 152;
 static constexpr int TOAST_TITLE_H = 20;
@@ -729,7 +738,9 @@ void GifPlayer::drawToast() {
         case ToastReason::NO_WIFI:
             head = "No WiFi";        detail = "Not joined to network"; break;
         case ToastReason::SERVER:
-            head = "Server offline"; detail = "Source not responding";  break;
+            head = "Server offline"; detail = "List not responding";    break;
+        case ToastReason::LIST_EMPTY:
+            head = "GIF list empty"; detail = "Set a list in settings";  break;
         default: /* DOWNLOAD */
             head = "Download failed"; detail = "Transfer interrupted";  break;
     }
@@ -880,28 +891,61 @@ void GifPlayer::clearListCache() {
 // ── Fetch GIF URL list from remote text file ──────────────────────────────────
 
 bool GifPlayer::fetchGifList(const String &url) {
+    // Auto-upgrade http:// to https://. GitHub/gist CDNs answer plain HTTP with a
+    // 301 to HTTPS, which a non-TLS client cannot follow — the fetch would fail and
+    // the list would look empty. Forcing TLS makes a pasted http:// URL just work.
+    String fetchUrl = url;
+    if (fetchUrl.startsWith("http://"))
+        fetchUrl = "https://" + fetchUrl.substring(7);
+
     WiFiClientSecure sec;
     sec.setInsecure();
 
     HTTPClient http;
-    if (url.startsWith("https"))
-        http.begin(sec, url);
+    if (fetchUrl.startsWith("https"))
+        http.begin(sec, fetchUrl);
     else
-        http.begin(url);
+        http.begin(fetchUrl);
 
     http.setTimeout(15000);
     http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
     int code = http.GET();
     if (code != HTTP_CODE_OK) {
-        Serial.printf("[GIF] List HTTP %d  %s\n", code, url.c_str());
+        Serial.printf("[GIF] List HTTP %d  %s\n", code, fetchUrl.c_str());
         http.end();
         return false;
     }
 
-    // Read the entire response body (text file, expected to be small)
-    String body = http.getString();
+    // Read the body directly from the stream. getString() can return empty after
+    // a redirect or chunked transfer over TLS (Content-Length unknown), which made
+    // a perfectly good list look empty. Read until the server closes or goes idle.
+    int contentLen = http.getSize();   // -1 when chunked / unknown
+    WiFiClient *stream = http.getStreamPtr();
+    String body;
+    body.reserve(contentLen > 0 ? (size_t)contentLen + 16 : 8192);
+
+    uint32_t lastData = millis();
+    uint32_t hardDeadline = millis() + 20000;   // absolute cap
+    char rb[257];
+    while (http.connected() && (contentLen < 0 || (int)body.length() < contentLen)
+           && millis() < hardDeadline) {
+        int avail = stream->available();
+        if (avail > 0) {
+            int n = stream->readBytes((uint8_t *)rb, min(avail, 256));
+            if (n > 0) { rb[n] = '\0'; body += rb; lastData = millis(); }
+        } else {
+            // Stop only after a long idle — short gaps between TLS records must not
+            // truncate the body (which would leave the last URL chopped off).
+            if (millis() - lastData > 8000) break;
+            delay(2);
+        }
+        yield();
+    }
     http.end();
+
+    Serial.printf("[GIF] List HTTP 200  len=%d  read=%u bytes\n",
+                  contentLen, (unsigned)body.length());
 
     if (body.length() == 0) {
         Serial.println("[GIF] List file is empty");
@@ -947,54 +991,6 @@ bool GifPlayer::fetchGifList(const String &url) {
     return s_listUrlCount > 0;
 }
 
-// ── Fetch random GIF URL from API ─────────────────────────────────────────────
-
-bool GifPlayer::fetchRandomGifUrl(String &outUrl) {
-    WiFiClientSecure sec;
-    sec.setInsecure();
-
-    HTTPClient http;
-    http.begin(sec, RANDOM_GIF_API);
-    http.setTimeout(10000);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        Serial.printf("[GIF] API HTTP %d\n", code);
-        http.end();
-        return false;
-    }
-
-    String body = http.getString();
-    http.end();
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-        Serial.println("[GIF] API JSON parse failed:");
-        Serial.println(body.substring(0, 300));
-        return false;
-    }
-
-    const char *url = nullptr;
-    if (!url) url = doc["url"]        | (const char *)nullptr;
-    if (!url) url = doc["gif_url"]    | (const char *)nullptr;
-    if (!url) url = doc["image_url"]  | (const char *)nullptr;
-    if (!url) url = doc["data"]["images"]["original"]["url"]  | (const char *)nullptr;
-    if (!url) url = doc["data"]["images"]["downsized"]["url"] | (const char *)nullptr;
-    if (!url) url = doc["data"]["url"]                        | (const char *)nullptr;
-    if (!url && doc.is<JsonArray>()) url = doc[0]["url"]      | (const char *)nullptr;  // Array response (thecatapi)
-
-    if (!url || strlen(url) == 0) {
-        Serial.println("[GIF] No URL found in API response:");
-        Serial.println(body.substring(0, 400));
-        return false;
-    }
-
-    outUrl = url;
-    Serial.printf("[GIF] Random: %s\n", outUrl.c_str());
-    return true;
-}
-
 // ── Stream GIF download to LittleFS ──────────────────────────────────────────
 
 // Stage the skip-banner fields for a GIF we are giving up on, blacklist it, and
@@ -1013,22 +1009,36 @@ void GifPlayer::flagFailedGif(const String &url, int bytes, const char *reason) 
 bool GifPlayer::streamGifToFlash(const String &url) {
     _failBanner = false;   // cleared unless this call decides the GIF is unusable
 
+    // Auto-upgrade http:// to https:// (CDNs 301 to TLS, non-TLS can't follow).
+    String dlUrl = url;
+    if (dlUrl.startsWith("http://"))
+        dlUrl = "https://" + dlUrl.substring(7);
+
+    // TLS connect to CDNs (giphy/github) can fail with -1 when the heap is
+    // fragmented (handshake needs a ~40 KB contiguous block). It is transient, so
+    // retry a couple of times before giving up.
     WiFiClientSecure sec;
     sec.setInsecure();
-
     HTTPClient http;
-    if (url.startsWith("https"))
-        http.begin(sec, url);
-    else
-        http.begin(url);
 
-    http.setTimeout(15000);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    int code = 0;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        if (dlUrl.startsWith("https")) http.begin(sec, dlUrl);
+        else                           http.begin(dlUrl);
+        http.setTimeout(15000);
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        Serial.printf("[GIF] DL HTTP %d  %s\n", code, url.c_str());
+        code = http.GET();
+        if (code == HTTP_CODE_OK) break;
+
+        Serial.printf("[GIF] DL HTTP %d (try %u, maxAlloc=%u)\n",
+                      code, attempt + 1, ESP.getMaxAllocHeap());
         http.end();
+        if (code >= 0) break;          // real HTTP error (404 etc) — don't retry
+        delay(400);                    // transient connect error — back off and retry
+    }
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("[GIF] DL failed %d  %s\n", code, url.c_str());
         return false;
     }
 
