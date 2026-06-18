@@ -67,6 +67,17 @@ private:
     void      drawToast();                     // render/refresh the toast overlay
     void      clearToast();                    // erase toast rect with fillRect
 
+    // ── Oversized / undecodable GIF banner ────────────────────────────────────
+    // Full-screen notice ("GIF too large", live countdown) shown when a GIF is
+    // skipped. Plays for ~10 s, then tick() advances to the next GIF.
+    bool      _failBanner    = false;          // true while the skip banner is shown
+    char      _failName[32]  = {0};            // truncated filename
+    char      _failMsg[24]   = {0};            // reason line
+    int       _failBytes     = 0;              // reported byte size (0 = hide)
+    uint32_t  _failShownMs   = 0;              // millis() when countdown was last drawn
+    void      drawFailBanner(bool full);       // full=true repaints everything, else countdown only
+    void      flagFailedGif(const String &url, int bytes, const char *reason); // blacklist + stage banner
+
     static void gifDrawCallback(GIFDRAW *pDraw);
 };
 
