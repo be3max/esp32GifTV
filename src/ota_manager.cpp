@@ -11,6 +11,11 @@
 static const char OTA_REPO[]       = "be3max/esp32GifTV";
 static const char OTA_ASSET_NAME[] = "firmware.bin";
 
+// Touch pad — same capacitive pad/threshold as main.cpp (PIN_TOUCH / TOUCH_THRESHOLD).
+// Duplicated here so the blocking confirm screen can read the button standalone.
+static const uint8_t OTA_PIN_TOUCH    = 32;
+static const uint8_t OTA_TOUCH_THRESH = 95;
+
 OTAManager otaManager;
 
 // ── Semver comparison ─────────────────────────────────────────────────────────
@@ -41,15 +46,15 @@ void OTAManager::tick(uint32_t now) {
     if (WiFi.status() != WL_CONNECTED) return;
     if (now - _lastCheckMs < CHECK_INTERVAL_MS) return;
     _lastCheckMs = now;
-    checkNow();
+    checkNow(false);  // hands-free: install immediately, no confirm prompt
 }
 
 // ── Version check + update entry point ───────────────────────────────────────
 
-void OTAManager::checkNow() {
+OTAManager::Result OTAManager::checkNow(bool interactive) {
     if (WiFi.status() != WL_CONNECTED) {
         bootScreen.showDialog("[ OTA Update ]", "No WiFi connection", 3000);
-        return;
+        return Result::FAILED;
     }
 
     _tft->fillScreen(TFT_BLACK);
@@ -60,7 +65,7 @@ void OTAManager::checkNow() {
     if (!fetchLatestVersion(latestTag, sizeof(latestTag))) {
         drawResult(false, "Version check failed");
         delay(4000);
-        return;
+        return Result::FAILED;
     }
 
     Serial.printf("[OTA] current=%s  latest=%s\n", FIRMWARE_VERSION_STR, latestTag);
@@ -76,13 +81,22 @@ void OTAManager::checkNow() {
         _tft->setTextColor(UI_AMBER, UI_NAVY);
         _tft->drawString(FIRMWARE_VERSION_STR, 120, 124, 2);
         delay(3000);
-        return;
+        return Result::UP_TO_DATE;
     }
 
-    // Newer firmware found — show version transition then download
+    // Newer firmware found.
+    if (interactive) {
+        // Manual check — let the user choose Back or Install.
+        int choice = waitForChoice(FIRMWARE_VERSION_STR, latestTag);
+        if (choice != 1) return Result::BACK;   // Back or timeout
+    }
+
+    // Show version transition then download
     char verLine[40];
     snprintf(verLine, sizeof(verLine), "%s -> %s",
              FIRMWARE_VERSION_STR, latestTag);
+    _tft->fillScreen(TFT_BLACK);
+    drawFrame();
     _tft->fillRect(8, 152, 224, 16, UI_NAVY);
     _tft->setTextDatum(TC_DATUM);
     _tft->setTextColor(UI_CGA_DARKGRAY, UI_NAVY);
@@ -91,6 +105,101 @@ void OTAManager::checkNow() {
     drawProgress("Preparing download...", 0, 0, 0);
 
     performUpdate(latestTag);
+    return Result::UPDATING;  // only reached if performUpdate failed (no restart)
+}
+
+// ── Confirm screen ─────────────────────────────────────────────────────────────
+
+void OTAManager::drawConfirm(const char *current, const char *latest, uint8_t sel) {
+    if (!_tft) return;
+
+    _tft->fillScreen(TFT_BLACK);
+    drawFrame();
+
+    // Version lines
+    char line[40];
+    _tft->setTextDatum(TC_DATUM);
+
+    snprintf(line, sizeof(line), "Installed:  %s", current);
+    _tft->setTextColor(TFT_WHITE, UI_NAVY);
+    _tft->drawString(line, 120, 84, 2);
+
+    snprintf(line, sizeof(line), "Available:  %s", latest);
+    _tft->setTextColor(UI_AMBER, UI_NAVY);
+    _tft->drawString(line, 120, 108, 2);
+
+    // Two buttons — [ Back ]   [ Install ]
+    const int16_t btnY = 140, btnH = 26;
+    const int16_t backX = 24,  backW = 80;
+    const int16_t instX = 136, instW = 80;
+
+    auto drawBtn = [&](int16_t x, int16_t w, const char *label, bool selected) {
+        uint16_t bg = selected ? TFT_YELLOW : UI_NAVY;
+        uint16_t fg = selected ? UI_NAVY    : TFT_LIGHTGREY;
+        _tft->fillRect(x, btnY, w, btnH, bg);
+        _tft->drawRect(x, btnY, w, btnH, TFT_LIGHTGREY);
+        _tft->setTextColor(fg, bg);
+        _tft->drawString(label, x + w / 2, btnY + btnH / 2 - 6, 2);
+    };
+    drawBtn(backX, backW, "Back",    sel == 0);
+    drawBtn(instX, instW, "Install", sel == 1);
+
+    // Footer hint
+    _tft->fillRect(8, 178, 224, 16, UI_NAVY);
+    _tft->setTextColor(UI_CGA_DARKGRAY, UI_NAVY);
+    _tft->drawString("Tap=move  Hold 1s=select", 120, 180, 2);
+}
+
+// ── Blocking choice loop (touch pad, edge + debounce) ──────────────────────────
+
+int OTAManager::waitForChoice(const char *current, const char *latest) {
+    uint8_t  sel        = 1;   // default highlight = Install
+    drawConfirm(current, latest, sel);
+
+    bool     lastRaw    = false;
+    uint32_t debounceMs = millis();
+    bool     pressed    = false;
+    uint32_t pressStart = 0;
+    bool     wasPressed = false;
+    uint32_t lastTouch  = millis();
+
+    const uint32_t HOLD_MS    = 1000;
+    const uint32_t TIMEOUT_MS = 15000;
+
+    for (;;) {
+        uint32_t now = millis();
+        bool raw = (touchRead(OTA_PIN_TOUCH) < OTA_TOUCH_THRESH);
+
+        // Debounce ~20 ms
+        if (raw != lastRaw) { lastRaw = raw; debounceMs = now; }
+        if ((now - debounceMs) >= 20) { pressed = raw; }
+
+        // Rising edge
+        if (pressed && !wasPressed) {
+            pressStart = now;
+            lastTouch  = now;
+        }
+        if (pressed) lastTouch = now;
+
+        // Falling edge — decide tap vs hold
+        if (!pressed && wasPressed) {
+            uint32_t held = now - pressStart;
+            if (held >= HOLD_MS) {
+                return sel;                 // hold → confirm
+            } else {
+                sel = (sel == 0) ? 1 : 0;   // tap → toggle
+                drawConfirm(current, latest, sel);
+            }
+        }
+
+        wasPressed = pressed;
+
+        // Idle timeout → treat as Back
+        if ((now - lastTouch) >= TIMEOUT_MS) return -1;
+
+        delay(8);
+        yield();
+    }
 }
 
 // ── GitHub API: fetch latest release tag ─────────────────────────────────────

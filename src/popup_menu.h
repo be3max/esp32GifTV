@@ -45,10 +45,10 @@ private:
     uint8_t   _infoScroll   = 0;
 
     static constexpr uint32_t AUTO_DISMISS_MS  = 7000;
-    static constexpr uint32_t HOLD_SELECT_MS   = 2000;
+    static constexpr uint32_t HOLD_SELECT_MS   = 1000;
     static constexpr uint32_t INFO_HOLD_MS     = 3000;
     static constexpr uint8_t  ITEM_COUNT       = 5;
-    static constexpr uint8_t  INFO_LINE_COUNT  = 10;
+    static constexpr uint8_t  INFO_LINE_COUNT  = 11;
     static constexpr uint8_t  INFO_LINE_LEN    = 25;
     static constexpr uint8_t  SCROLLBAR_W      = 8;
     static constexpr uint8_t  QR_MODULE_PX     = 3;    // pixels per QR module
@@ -56,9 +56,9 @@ private:
 
     // Layout — centred on 240×240 display
     static constexpr uint8_t  MX      = 10;
-    static constexpr uint8_t  MY      = 62;
+    static constexpr uint8_t  MY      = 36;
     static constexpr uint8_t  MW      = 220;
-    static constexpr uint8_t  MH      = 140;
+    static constexpr uint8_t  MH      = 170;
     static constexpr uint8_t  TITLE_H = 20;
     static constexpr uint8_t  ITEM_H  = 28;
 

@@ -66,7 +66,8 @@ void PopupMenu::showInfo(const char *ip, int rssi) {
     snprintf(_infoLines[6], INFO_LINE_LEN, "3. Enter URL above");
     snprintf(_infoLines[7], INFO_LINE_LEN, " ");
     snprintf(_infoLines[8], INFO_LINE_LEN, "Signal: %d dBm", rssi);
-    snprintf(_infoLines[9], INFO_LINE_LEN, "Hold 3s > close");
+    snprintf(_infoLines[9], INFO_LINE_LEN, "Firmware: %s", FIRMWARE_VERSION_STR);
+    snprintf(_infoLines[10], INFO_LINE_LEN, "Hold 3s > close");
     qrcode_initText(&_qrCode, _qrBuffer, 2, ECC_LOW, _infoLines[1]);
     _infoScroll   = 0;
     _showingInfo  = true;
@@ -127,8 +128,9 @@ void PopupMenu::drawInfo(uint32_t now) {
             uint8_t lineIdx = _infoScroll + i;
             if (lineIdx >= INFO_LINE_COUNT) break;
             const int16_t lineY = contentTop + i * 16 + 8;
-            uint16_t color = (lineIdx == 1) ? TFT_YELLOW
-                           : (lineIdx == 9) ? TFT_LIGHTGREY
+            uint16_t color = (lineIdx == 1)  ? TFT_YELLOW
+                           : (lineIdx == 9)  ? TFT_GREEN      // firmware version
+                           : (lineIdx == 10) ? TFT_LIGHTGREY  // close hint
                            : TFT_WHITE;
             d->setTextColor(color, TFT_NAVY);
             d->drawString(_infoLines[lineIdx], ox + 5, lineY);
@@ -192,7 +194,7 @@ void PopupMenu::draw(uint32_t now) {
 
     // Determine hold progress in dots
     uint32_t holdMs  = (_pressStartMs > 0 && _lastPressed) ? (now - _pressStartMs) : 0;
-    uint8_t holdDots = (holdMs >= 1500) ? 3 : (holdMs >= 1000) ? 2 : (holdMs >= 500) ? 1 : 0;
+    uint8_t holdDots = (holdMs >= 750) ? 3 : (holdMs >= 500) ? 2 : (holdMs >= 250) ? 1 : 0;
 
     // Draw items
     for (uint8_t i = 0; i < ITEM_COUNT; i++) {

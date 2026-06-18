@@ -347,10 +347,14 @@ void loop() {
             popupMenu.showInfo(WiFi.localIP().toString().c_str(), WiFi.RSSI());
         } else if (menuAct == PopupMenu::Action::CHECK_FW_UPDATE) {
             Serial.println("[MENU] Check FW Update");
-            otaManager.checkNow();  // blocks; restarts on success
+            OTAManager::Result r = otaManager.checkNow();  // blocks; restarts on install success
             uiCrtCollapse(&tft);
-            if (currentMode == AppMode::CLOCK)        clockDisplay.forceRedraw();
-            else if (currentMode == AppMode::WEATHER) weather.draw();
+            if (r == OTAManager::Result::BACK) {
+                popupMenu.show(millis());  // user chose Back → reopen menu
+            } else {
+                if (currentMode == AppMode::CLOCK)        clockDisplay.forceRedraw();
+                else if (currentMode == AppMode::WEATHER) weather.draw();
+            }
         } else if (menuAct == PopupMenu::Action::CLOSE) {
             // Menu covered the centre of the screen — repaint static modes
             if (currentMode == AppMode::CLOCK)        clockDisplay.forceRedraw();
