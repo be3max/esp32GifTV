@@ -3,7 +3,7 @@
 
 PopupMenu popupMenu;
 
-static const char *ITEM_LABELS[4] = { "Information", "Clear Cache", "Restart", "Close Menu" };
+static const char *ITEM_LABELS[5] = { "Information", "Clear Cache", "Check FW Update", "Restart", "Close Menu" };
 
 // ── Open/close animations (retro expanding box) ───────────────────────────────
 
@@ -304,6 +304,11 @@ PopupMenu::Action PopupMenu::tick(bool pressed, uint32_t now) {
                     result = Action::CLEAR_CACHE;
                     break;
                 case 2:
+                    animateClose();
+                    _visible = false;
+                    result = Action::CHECK_FW_UPDATE;
+                    break;
+                case 3:
                     animateClose();
                     _visible = false;
                     result = Action::RESTART;

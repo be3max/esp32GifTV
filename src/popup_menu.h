@@ -8,7 +8,7 @@
 // Auto-dismisses after 7 s of no touch.
 class PopupMenu {
 public:
-    enum class Action { NONE = 0, CLEAR_CACHE, RESTART, INFO, CLOSE };
+    enum class Action { NONE = 0, CLEAR_CACHE, RESTART, INFO, CHECK_FW_UPDATE, CLOSE };
 
     void begin(TFT_eSPI *tft);
 
@@ -47,7 +47,7 @@ private:
     static constexpr uint32_t AUTO_DISMISS_MS  = 7000;
     static constexpr uint32_t HOLD_SELECT_MS   = 2000;
     static constexpr uint32_t INFO_HOLD_MS     = 3000;
-    static constexpr uint8_t  ITEM_COUNT       = 4;
+    static constexpr uint8_t  ITEM_COUNT       = 5;
     static constexpr uint8_t  INFO_LINE_COUNT  = 10;
     static constexpr uint8_t  INFO_LINE_LEN    = 25;
     static constexpr uint8_t  SCROLLBAR_W      = 8;

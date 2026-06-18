@@ -16,6 +16,7 @@
 #include "boot_screen.h"
 #include "popup_menu.h"
 #include "ui_theme.h"
+#include "ota_manager.h"
 
 // ── Hardware (NM-TV-154) ─────────────────────────────────────────────────────
 #define TFT_POWER_PIN  21   // Active LOW — P-FET gate powering the display
@@ -257,6 +258,7 @@ void setup() {
     weather.begin(&tft);
     statusBar.begin(&tft);
     webPortal.begin();
+    otaManager.begin(&tft);
 
     currentMode = pickMode(cfg);
     gifPlayer.setRefreshInterval(cfg.gif_refresh_seconds);
@@ -290,6 +292,7 @@ void setup() {
 // ── Loop ──────────────────────────────────────────────────────────────────────
 void loop() {
     webPortal.update();
+    otaManager.tick(millis());
 
     // ── WiFi reconnect watchdog ────────────────────────────────────────────────
     // Non-blocking: if the link has been down for a few seconds, kick a reconnect.
@@ -342,6 +345,12 @@ void loop() {
         } else if (menuAct == PopupMenu::Action::INFO) {
             Serial.println("[MENU] Info");
             popupMenu.showInfo(WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        } else if (menuAct == PopupMenu::Action::CHECK_FW_UPDATE) {
+            Serial.println("[MENU] Check FW Update");
+            otaManager.checkNow();  // blocks; restarts on success
+            uiCrtCollapse(&tft);
+            if (currentMode == AppMode::CLOCK)        clockDisplay.forceRedraw();
+            else if (currentMode == AppMode::WEATHER) weather.draw();
         } else if (menuAct == PopupMenu::Action::CLOSE) {
             // Menu covered the centre of the screen — repaint static modes
             if (currentMode == AppMode::CLOCK)        clockDisplay.forceRedraw();

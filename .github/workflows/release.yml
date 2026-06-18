@@ -1,0 +1,57 @@
+name: Build and Release Firmware
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Inject version from tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          sed -i "s/-DFIRMWARE_VERSION_STR=\\\\\"[^\\\\\"]*\\\\\"/-DFIRMWARE_VERSION_STR=\\\\\"${TAG}\\\\\"/" platformio.ini
+          echo "Injected version: ${TAG}"
+          grep FIRMWARE_VERSION_STR platformio.ini
+
+      - name: Build firmware
+        run: pio run -e tv-miner-esp32
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Firmware ${{ github.ref_name }}"
+          body: |
+            ## ESP32 GIF TV Firmware ${{ github.ref_name }}
+
+            Flash via OTA (automatic) or manually via PlatformIO.
+
+            **Manual flash:**
+            ```
+            pio run -e tv-miner-esp32 -t upload
+            ```
+          files: .pio/build/tv-miner-esp32/firmware.bin
+          fail_on_unmatched_files: true

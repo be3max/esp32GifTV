@@ -1,0 +1,281 @@
+#include "ota_manager.h"
+#include "ui_theme.h"
+#include "boot_screen.h"
+
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <Update.h>
+#include <WiFi.h>
+
+static const char OTA_REPO[]       = "be3max/esp32GifTV";
+static const char OTA_ASSET_NAME[] = "firmware.bin";
+
+OTAManager otaManager;
+
+// ── Semver comparison ─────────────────────────────────────────────────────────
+
+static bool isNewerVersion(const char *current, const char *candidate) {
+    const char *c = (*current   == 'v') ? current   + 1 : current;
+    const char *l = (*candidate == 'v') ? candidate + 1 : candidate;
+    int cmaj = 0, cmin = 0, cpatch = 0;
+    int lmaj = 0, lmin = 0, lpatch = 0;
+    sscanf(c, "%d.%d.%d", &cmaj, &cmin, &cpatch);
+    sscanf(l, "%d.%d.%d", &lmaj, &lmin, &lpatch);
+    if (lmaj != cmaj) return lmaj > cmaj;
+    if (lmin != cmin) return lmin > cmin;
+    return lpatch > cpatch;
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+
+void OTAManager::begin(TFT_eSPI *tft) {
+    _tft = tft;
+    _lastCheckMs = millis();  // skip immediate check on boot
+    Serial.println("[OTA] manager ready, version=" FIRMWARE_VERSION_STR);
+}
+
+// ── Periodic tick ─────────────────────────────────────────────────────────────
+
+void OTAManager::tick(uint32_t now) {
+    if (WiFi.status() != WL_CONNECTED) return;
+    if (now - _lastCheckMs < CHECK_INTERVAL_MS) return;
+    _lastCheckMs = now;
+    checkNow();
+}
+
+// ── Version check + update entry point ───────────────────────────────────────
+
+void OTAManager::checkNow() {
+    if (WiFi.status() != WL_CONNECTED) {
+        bootScreen.showDialog("[ OTA Update ]", "No WiFi connection", 3000);
+        return;
+    }
+
+    _tft->fillScreen(TFT_BLACK);
+    drawFrame();
+    drawProgress("Checking GitHub...", 0, 0, 0);
+
+    char latestTag[32] = {0};
+    if (!fetchLatestVersion(latestTag, sizeof(latestTag))) {
+        drawResult(false, "Version check failed");
+        delay(4000);
+        return;
+    }
+
+    Serial.printf("[OTA] current=%s  latest=%s\n", FIRMWARE_VERSION_STR, latestTag);
+
+    if (!isNewerVersion(FIRMWARE_VERSION_STR, latestTag)) {
+        // Already on latest — show success, dismiss after 3 s
+        _tft->fillRect(BAR_X + 1, BAR_Y + 1, BAR_W - 2, BAR_H - 2, 0x03E0); // dark green fill
+        _tft->fillRect(8, 78, 224, 16, UI_NAVY);
+        _tft->setTextDatum(TC_DATUM);
+        _tft->setTextColor(TFT_GREEN, UI_NAVY);
+        _tft->drawString("Firmware up to date", 120, 78, 2);
+        _tft->fillRect(8, 124, 224, 16, UI_NAVY);
+        _tft->setTextColor(UI_AMBER, UI_NAVY);
+        _tft->drawString(FIRMWARE_VERSION_STR, 120, 124, 2);
+        delay(3000);
+        return;
+    }
+
+    // Newer firmware found — show version transition then download
+    char verLine[40];
+    snprintf(verLine, sizeof(verLine), "%s -> %s",
+             FIRMWARE_VERSION_STR, latestTag);
+    _tft->fillRect(8, 152, 224, 16, UI_NAVY);
+    _tft->setTextDatum(TC_DATUM);
+    _tft->setTextColor(UI_CGA_DARKGRAY, UI_NAVY);
+    _tft->drawString(verLine, 120, 154, 2);
+
+    drawProgress("Preparing download...", 0, 0, 0);
+
+    performUpdate(latestTag);
+}
+
+// ── GitHub API: fetch latest release tag ─────────────────────────────────────
+
+bool OTAManager::fetchLatestVersion(char *outTag, size_t tagLen) {
+    char apiUrl[96];
+    snprintf(apiUrl, sizeof(apiUrl),
+             "https://api.github.com/repos/%s/releases/latest", OTA_REPO);
+
+    WiFiClientSecure sec;
+    sec.setInsecure();
+    HTTPClient http;
+    http.begin(sec, apiUrl);
+    http.setTimeout(10000);
+    http.addHeader("User-Agent",  "esp32GifTV/1.0");
+    http.addHeader("Accept",      "application/vnd.github+json");
+
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("[OTA] API HTTP %d\n", code);
+        http.end();
+        return false;
+    }
+
+    // Filter: only extract tag_name — saves heap on large JSON response
+    JsonDocument filter;
+    filter["tag_name"] = true;
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(
+        doc, http.getStream(), DeserializationOption::Filter(filter));
+    http.end();
+
+    if (err) {
+        Serial.printf("[OTA] JSON error: %s\n", err.c_str());
+        return false;
+    }
+
+    const char *tag = doc["tag_name"] | (const char *)nullptr;
+    if (!tag || tag[0] == '\0') return false;
+
+    strlcpy(outTag, tag, tagLen);
+    return true;
+}
+
+// ── Download + flash ──────────────────────────────────────────────────────────
+
+void OTAManager::performUpdate(const char *tag) {
+    char url[192];
+    snprintf(url, sizeof(url),
+             "https://github.com/%s/releases/download/%s/%s",
+             OTA_REPO, tag, OTA_ASSET_NAME);
+    Serial.printf("[OTA] fetch: %s\n", url);
+
+    WiFiClientSecure sec;
+    sec.setInsecure();
+    HTTPClient http;
+    http.begin(sec, url);
+    http.setTimeout(60000);  // uint16_t max ~65 s
+    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    http.addHeader("User-Agent", "esp32GifTV/1.0");
+
+    int code = http.GET();
+    if (code != HTTP_CODE_OK) {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "Download HTTP %d", code);
+        drawResult(false, msg);
+        delay(5000);
+        http.end();
+        return;
+    }
+
+    int totalBytes = http.getSize();
+    Serial.printf("[OTA] size=%d\n", totalBytes);
+
+    if (!Update.begin(totalBytes > 0 ? (size_t)totalBytes : UPDATE_SIZE_UNKNOWN)) {
+        drawResult(false, "No flash space");
+        delay(5000);
+        http.end();
+        return;
+    }
+
+    WiFiClient *stream  = http.getStreamPtr();
+    static uint8_t buf[512];
+    int written   = 0;
+    int lastPct   = -1;
+    uint32_t deadline = millis() + 60000UL;
+
+    while (http.connected()
+           && (totalBytes < 0 || written < totalBytes)
+           && millis() < deadline) {
+        int avail = stream->available();
+        if (avail > 0) {
+            int n = stream->readBytes(buf, min(avail, (int)sizeof(buf)));
+            if (n > 0) {
+                size_t w = Update.write(buf, (size_t)n);
+                if (w != (size_t)n) {
+                    drawResult(false, Update.errorString());
+                    delay(5000);
+                    http.end();
+                    return;
+                }
+                written += n;
+                int pct = (totalBytes > 0) ? (written * 100 / totalBytes) : 0;
+                if (pct != lastPct) {
+                    drawProgress("Downloading...", pct, written, totalBytes);
+                    lastPct = pct;
+                }
+            }
+        }
+        yield();
+    }
+
+    http.end();
+
+    if (written == 0 || (totalBytes > 0 && written < totalBytes)) {
+        Update.abort();
+        drawResult(false, "Download incomplete");
+        delay(5000);
+        return;
+    }
+
+    if (!Update.end(true)) {
+        drawResult(false, Update.errorString());
+        delay(5000);
+        return;
+    }
+
+    drawResult(true, "Complete!  Restarting...");
+    delay(3000);
+    ESP.restart();
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+
+void OTAManager::drawFrame() {
+    uiDrawDosFrame(_tft, 0, 0, 240, 240, 18, " OTA UPDATE ", UI_NAVY);
+    _tft->setTextDatum(TC_DATUM);
+    _tft->setTextColor(UI_AMBER, UI_NAVY);
+    _tft->drawString("FIRMWARE UPDATE", 120, 52, 2);
+}
+
+void OTAManager::drawProgress(const char *status, int pct, int written, int total) {
+    if (!_tft) return;
+
+    // Status text
+    _tft->fillRect(8, 78, 224, 16, UI_NAVY);
+    _tft->setTextDatum(TC_DATUM);
+    _tft->setTextColor(TFT_WHITE, UI_NAVY);
+    _tft->drawString(status, 120, 78, 2);
+
+    // Progress bar
+    _tft->drawRect(BAR_X, BAR_Y, BAR_W, BAR_H, TFT_LIGHTGREY);
+    int fill = (pct > 0) ? ((BAR_W - 2) * pct / 100) : 0;
+    if (fill > 0)
+        _tft->fillRect(BAR_X + 1, BAR_Y + 1, fill, BAR_H - 2, TFT_WHITE);
+    if (fill < BAR_W - 2)
+        _tft->fillRect(BAR_X + 1 + fill, BAR_Y + 1, BAR_W - 2 - fill, BAR_H - 2, UI_NAVY);
+
+    // Bytes / percentage
+    _tft->fillRect(8, 124, 224, 16, UI_NAVY);
+    char bline[48] = "";
+    if (total > 0)
+        snprintf(bline, sizeof(bline), "%d%%   %d / %d B", pct, written, total);
+    else if (written > 0)
+        snprintf(bline, sizeof(bline), "%d B", written);
+    _tft->setTextColor(UI_AMBER, UI_NAVY);
+    _tft->drawString(bline, 120, 124, 2);
+}
+
+void OTAManager::drawResult(bool ok, const char *msg) {
+    if (!_tft) return;
+
+    // Fill bar solid green on success, red on failure
+    uint16_t barCol = ok ? 0x03E0 : TFT_RED;  // 0x03E0 = dark green RGB565
+    _tft->fillRect(BAR_X + 1, BAR_Y + 1, BAR_W - 2, BAR_H - 2, barCol);
+
+    // Status
+    _tft->fillRect(8, 78, 224, 16, UI_NAVY);
+    _tft->setTextDatum(TC_DATUM);
+    _tft->setTextColor(ok ? TFT_GREEN : TFT_RED, UI_NAVY);
+    _tft->drawString(ok ? "SUCCESS" : "FAILED", 120, 78, 2);
+
+    // Message
+    _tft->fillRect(8, 124, 224, 16, UI_NAVY);
+    _tft->setTextColor(ok ? TFT_GREEN : TFT_RED, UI_NAVY);
+    _tft->drawString(msg, 120, 124, 2);
+}
