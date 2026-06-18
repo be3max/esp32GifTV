@@ -61,11 +61,18 @@ private:
     void    openAndPlayFile(const char *path); // open GIF file and play it
     void    startTransition();                  // initialize and arm the glitch transition
 
-    // ── Toast notification (no-internet) ──────────────────────────────────────
+    // ── Connection-problem notice (was "no-internet toast") ───────────────────
+    // Reason shown on the notice so the user knows *why* playback stalled:
+    //   NO_WIFI  — not associated with an access point
+    //   SERVER   — WiFi up, but the GIF source/API did not respond
+    //   DOWNLOAD — WiFi up, transfer started but failed/incomplete
+    enum class ToastReason : uint8_t { NO_WIFI, SERVER, DOWNLOAD };
+    ToastReason _toastReason  = ToastReason::NO_WIFI;
     uint32_t  _toastShownMs  = 0;              // millis() when toast was last drawn
-    bool      _toastVisible  = false;          // true while retry-pending toast is shown
-    void      drawToast();                     // render/refresh the toast overlay
-    void      clearToast();                    // erase toast rect with fillRect
+    bool      _toastVisible  = false;          // true while retry-pending notice is shown
+    void      drawToast();                     // render/refresh the notice panel (uses _toastReason)
+    void      clearToast();                    // erase notice area with fillRect
+    bool      playFromCacheFallback();         // on network failure, play a cached GIF if any exist
 
     // ── Oversized / undecodable GIF banner ────────────────────────────────────
     // Full-screen notice ("GIF too large", live countdown) shown when a GIF is

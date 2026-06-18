@@ -592,8 +592,10 @@ void GifPlayer::fetchAndPlay() {
     // tick() (and the toast countdown). Arm the retry and let the WiFi watchdog
     // re-associate — playback resumes automatically once internet returns.
     if (WiFi.status() != WL_CONNECTED) {
+        if (playFromCacheFallback()) return;   // offline but cache available
         Serial.println("[GIF] No WiFi — retry in 10 s");
-        _retryAfterMs = millis() + 10000;
+        _retryAfterMs  = millis() + 10000;
+        _toastReason   = ToastReason::NO_WIFI;
         drawToast();
         return;
     }
@@ -629,8 +631,10 @@ void GifPlayer::fetchAndPlay() {
         gifUrl = urlList[idx];
         Serial.printf("[GIF] URL #%u (random, avoid repeat): %s\n", idx, gifUrl.c_str());
     } else if (!fetchRandomGifUrl(gifUrl)) {
+        if (playFromCacheFallback()) return;   // WiFi up but API failed — use cache
         Serial.println("[GIF] API failed — retry in 10 s");
-        _retryAfterMs = millis() + 10000;
+        _retryAfterMs  = millis() + 10000;
+        _toastReason   = ToastReason::SERVER;
         drawToast();
         return;
     }
@@ -659,9 +663,11 @@ void GifPlayer::fetchAndPlay() {
     // Stream GIF to flash — HTTP + TLS operate with no large heap block held.
     if (!streamGifToFlash(gifUrl)) {
         // streamGifToFlash sets up the skip banner itself for too-large / no-space
-        // failures; everything else (HTTP error, empty body) falls back to the toast.
+        // failures; everything else (HTTP error, empty body) is a connection issue.
+        if (!_failBanner && playFromCacheFallback()) return;  // transient fail — use cache
         Serial.println("[GIF] Download failed — retry in 10 s");
-        _retryAfterMs = millis() + 10000;
+        _retryAfterMs  = millis() + 10000;
+        _toastReason   = ToastReason::DOWNLOAD;
         if (_failBanner) drawFailBanner(true); else drawToast();
         return;
     }
@@ -699,43 +705,88 @@ void GifPlayer::stop() {
     _hasGif = false;
 }
 
-// ── Toast notification (no-internet) ───────────────────────────────────────
+// ── Connection-problem notice (full panel, replaces the old tiny toast) ─────
 
-static constexpr int TOAST_X = 20;
-static constexpr int TOAST_Y = 185;
-static constexpr int TOAST_W = 200;
-static constexpr int TOAST_H = 34;
+static constexpr int TOAST_X = 16;
+static constexpr int TOAST_Y = 44;
+static constexpr int TOAST_W = 208;
+static constexpr int TOAST_H = 152;
+static constexpr int TOAST_TITLE_H = 20;
 
 void GifPlayer::drawToast() {
     if (!_tft || _retryAfterMs == 0) return;
 
-    uint32_t now     = millis();
+    uint32_t now      = millis();
     uint32_t secsLeft = (_retryAfterMs > now)
                         ? ((_retryAfterMs - now) + 999) / 1000
                         : 0;
+
+    const int16_t cx = TOAST_X + TOAST_W / 2;
+
+    // Reason-specific heading + detail line.
+    const char *head, *detail;
+    switch (_toastReason) {
+        case ToastReason::NO_WIFI:
+            head = "No WiFi";        detail = "Not joined to network"; break;
+        case ToastReason::SERVER:
+            head = "Server offline"; detail = "Source not responding";  break;
+        default: /* DOWNLOAD */
+            head = "Download failed"; detail = "Transfer interrupted";  break;
+    }
 
     _tft->setTextFont(2);
     _tft->setTextSize(1);
 
     if (!_toastVisible) {
-        // DOS error mini-dialog: double border over maroon (chrome drawn once)
-        uiDrawDosFrame(_tft, TOAST_X, TOAST_Y, TOAST_W, TOAST_H, 0, nullptr, TFT_MAROON);
+        // Full DOS-style dialog so the notice is readable, not lost on black.
+        _tft->fillRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, UI_NAVY);
+        uiDrawDosFrame(_tft, TOAST_X, TOAST_Y, TOAST_W, TOAST_H,
+                       TOAST_TITLE_H, " CONNECTION ", UI_NAVY);
 
-        _tft->setTextColor(TFT_YELLOW, TFT_MAROON);
-        _tft->setTextDatum(ML_DATUM);
-        _tft->drawString("[!]", TOAST_X + 8, TOAST_Y + TOAST_H / 2);
+        int16_t y = TOAST_Y + TOAST_TITLE_H + 8;
 
-        _tft->setTextColor(TFT_WHITE, TFT_MAROON);
-        _tft->drawString("No internet", TOAST_X + 34, TOAST_Y + TOAST_H / 2);
+        // Heading row: warning glyph + reason
+        _tft->setTextDatum(TC_DATUM);
+        _tft->setTextColor(TFT_YELLOW, UI_NAVY);
+        _tft->drawString(String("[!] ") + head, cx, y, 2);
+        y += 22;
+
+        // One-line explanation
+        _tft->setTextColor(TFT_WHITE, UI_NAVY);
+        _tft->drawString(detail, cx, y, 2);
+        y += 22;
+
+        // WiFi status detail
+        char line[40];
+        if (WiFi.status() == WL_CONNECTED) {
+            snprintf(line, sizeof(line), "WiFi: on  %d dBm", WiFi.RSSI());
+            _tft->setTextColor(TFT_GREEN, UI_NAVY);
+        } else {
+            snprintf(line, sizeof(line), "WiFi: offline");
+            _tft->setTextColor(TFT_ORANGE, UI_NAVY);
+        }
+        _tft->drawString(line, cx, y, 2);
+        y += 20;
+
+        // Cache status — tells the user offline playback is/ isn't possible
+        uint8_t  cc = getCacheCount();
+        uint32_t cb = getCacheBytes();
+        if (cc > 0)
+            snprintf(line, sizeof(line), "Cached: %u gif / %u KB", cc, cb / 1024);
+        else
+            snprintf(line, sizeof(line), "Cached: none yet");
+        _tft->setTextColor(cc > 0 ? TFT_CYAN : TFT_DARKGREY, UI_NAVY);
+        _tft->drawString(line, cx, y, 2);
     }
 
-    // Countdown field — only this small cell repaints each second
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%us", (unsigned)secsLeft);
-    _tft->fillRect(TOAST_X + TOAST_W - 48, TOAST_Y + 4, 40, TOAST_H - 8, TFT_MAROON);
-    _tft->setTextColor(TFT_WHITE, TFT_MAROON);
-    _tft->setTextDatum(MR_DATUM);
-    _tft->drawString(buf, TOAST_X + TOAST_W - 10, TOAST_Y + TOAST_H / 2);
+    // Countdown row — only this strip repaints each second.
+    int16_t cyRow = TOAST_Y + TOAST_H - 22;
+    char buf[24];
+    snprintf(buf, sizeof(buf), "Retry in %us", (unsigned)secsLeft);
+    _tft->fillRect(TOAST_X + 4, cyRow - 2, TOAST_W - 8, 18, UI_NAVY);
+    _tft->setTextDatum(TC_DATUM);
+    _tft->setTextColor(UI_AMBER, UI_NAVY);
+    _tft->drawString(buf, cx, cyRow, 2);
 
     _toastShownMs = now;
     _toastVisible = true;
@@ -745,6 +796,22 @@ void GifPlayer::clearToast() {
     if (!_tft || !_toastVisible) return;
     _tft->fillRect(TOAST_X, TOAST_Y, TOAST_W, TOAST_H, TFT_BLACK);
     _toastVisible = false;
+}
+
+// On a network failure, fall back to a cached GIF instead of stalling on the
+// notice. Returns true if a cached GIF was started (caller should return).
+bool GifPlayer::playFromCacheFallback() {
+    const DeviceConfig &cfg = configMgr.getConfig();
+    if (!cfg.gif_cache_enabled) return false;
+    cacheMetaLoad();
+    if (s_cacheMeta.count == 0) return false;
+
+    String path = cacheRandomPath(-1);
+    if (path.isEmpty()) return false;
+    strlcpy(_currentGifPath, path.c_str(), sizeof(_currentGifPath));
+    Serial.printf("[GIF] Network failed — fallback to cache %s\n", _currentGifPath);
+    openAndPlayFile(_currentGifPath);
+    return true;
 }
 
 // ── Oversized / undecodable GIF skip banner ─────────────────────────────────
