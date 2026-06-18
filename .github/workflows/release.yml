@@ -2,8 +2,8 @@ name: Build and Release Firmware
 
 on:
   push:
-    tags:
-      - 'v*.*.*'
+    branches:
+      - main
 
 permissions:
   contents: write
@@ -30,11 +30,12 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Inject version from tag
+      - name: Inject auto-version
         run: |
-          TAG="${{ github.ref_name }}"
-          sed -i "s/-DFIRMWARE_VERSION_STR=\\\\\"[^\\\\\"]*\\\\\"/-DFIRMWARE_VERSION_STR=\\\\\"${TAG}\\\\\"/" platformio.ini
-          echo "Injected version: ${TAG}"
+          VERSION="1.0.${{ github.run_number }}"
+          sed -i "s/-DFIRMWARE_VERSION_STR=\\\\\"[^\\\\\"]*\\\\\"/-DFIRMWARE_VERSION_STR=\\\\\"${VERSION}\\\\\"/" platformio.ini
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "Injected version: ${VERSION}"
           grep FIRMWARE_VERSION_STR platformio.ini
 
       - name: Build firmware
@@ -43,13 +44,14 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: "Firmware ${{ github.ref_name }}"
+          tag_name: "v${{ env.VERSION }}"
+          name: "Firmware v${{ env.VERSION }}"
           body: |
-            ## ESP32 GIF TV Firmware ${{ github.ref_name }}
+            ## ESP32 GIF TV Firmware v${{ env.VERSION }}
 
-            Flash via OTA (automatic) or manually via PlatformIO.
+            Built from commit ${{ github.sha }} on `main`.
 
-            **Manual flash:**
+            Flash via OTA (automatic within 15 min) or manually:
             ```
             pio run -e tv-miner-esp32 -t upload
             ```
