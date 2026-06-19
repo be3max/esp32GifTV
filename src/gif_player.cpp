@@ -900,20 +900,28 @@ bool GifPlayer::fetchGifList(const String &url) {
 
     WiFiClientSecure sec;
     sec.setInsecure();
-
     HTTPClient http;
-    if (fetchUrl.startsWith("https"))
-        http.begin(sec, fetchUrl);
-    else
-        http.begin(fetchUrl);
 
-    http.setTimeout(15000);
-    http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+    // Retry transient TLS connect failures (-1) — common at boot when the heap is
+    // fragmented and the handshake can't grab a ~40 KB contiguous block.
+    int code = 0;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        if (fetchUrl.startsWith("https")) http.begin(sec, fetchUrl);
+        else                              http.begin(fetchUrl);
+        http.setTimeout(15000);
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
-        Serial.printf("[GIF] List HTTP %d  %s\n", code, fetchUrl.c_str());
+        code = http.GET();
+        if (code == HTTP_CODE_OK) break;
+
+        Serial.printf("[GIF] List HTTP %d (try %u, maxAlloc=%u)\n",
+                      code, attempt + 1, ESP.getMaxAllocHeap());
         http.end();
+        if (code >= 0) break;          // real HTTP error — don't retry
+        delay(400);
+    }
+    if (code != HTTP_CODE_OK) {
+        Serial.printf("[GIF] List fetch failed %d  %s\n", code, fetchUrl.c_str());
         return false;
     }
 
@@ -928,16 +936,19 @@ bool GifPlayer::fetchGifList(const String &url) {
     uint32_t lastData = millis();
     uint32_t hardDeadline = millis() + 20000;   // absolute cap
     char rb[257];
-    while (http.connected() && (contentLen < 0 || (int)body.length() < contentLen)
+    // Keep reading while the server is connected OR bytes remain buffered. The
+    // server sends the body then closes (FIN), so connected() can go false while
+    // the last few KB are still in the TLS buffer — draining them prevents the
+    // body (and thus the final URL) from being truncated.
+    while ((http.connected() || stream->available() > 0)
+           && (contentLen < 0 || (int)body.length() < contentLen)
            && millis() < hardDeadline) {
         int avail = stream->available();
         if (avail > 0) {
             int n = stream->readBytes((uint8_t *)rb, min(avail, 256));
             if (n > 0) { rb[n] = '\0'; body += rb; lastData = millis(); }
         } else {
-            // Stop only after a long idle — short gaps between TLS records must not
-            // truncate the body (which would leave the last URL chopped off).
-            if (millis() - lastData > 8000) break;
+            if (millis() - lastData > 8000) break;   // idle: server done/stalled
             delay(2);
         }
         yield();
@@ -950,6 +961,13 @@ bool GifPlayer::fetchGifList(const String &url) {
     if (body.length() == 0) {
         Serial.println("[GIF] List file is empty");
         return false;
+    }
+
+    // If the read still ended short, drop the final (incomplete) line so we never
+    // sample a chopped-off URL that would fail every download attempt.
+    if (contentLen > 0 && (int)body.length() < contentLen) {
+        int lastNl = body.lastIndexOf('\n');
+        if (lastNl >= 0) body.remove(lastNl);
     }
 
     // Reservoir sampling: one-pass random selection of LIST_BUF_SIZE URLs.

@@ -37,15 +37,21 @@ void PopupMenu::animateClose() {
         delay(16);
     }
     _tft->fillRect(MX, MY, MW, MH, TFT_BLACK);
+
+    // Free the ~75 KB sprite buffer while the menu is closed. Keeping it allocated
+    // for the app's lifetime fragmented the heap enough to starve the TLS handshake
+    // (GIF/OTA downloads failed with -1). The menu is open only briefly, so trade a
+    // re-alloc on open for a large contiguous block during normal playback.
+    if (_spr) _spr->deleteSprite();
 }
 
 void PopupMenu::begin(TFT_eSPI *tft) {
     _tft = tft;
-    _spr = new TFT_eSprite(tft);
-    if (_spr) _spr->createSprite(MW, MH);  // Allocate once; kept for lifetime of app
+    _spr = new TFT_eSprite(tft);   // object only; buffer allocated on show()
 }
 
 void PopupMenu::show(uint32_t now) {
+    if (_spr) _spr->createSprite(MW, MH);   // double-buffer while menu is visible
     animateOpen();
     _visible      = true;
     _selected     = 0;

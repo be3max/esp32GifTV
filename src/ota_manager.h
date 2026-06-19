@@ -21,6 +21,7 @@ private:
     void drawProgress(const char *status, int pct, int written, int total);
     void drawResult(bool ok, const char *msg);
     void drawConfirm(const char *current, const char *latest, uint8_t sel);
+    void drawConfirmButtons(uint8_t sel);   // repaint only the two buttons (no flicker)
     int  waitForChoice(const char *current, const char *latest); // 0=Back 1=Install -1=timeout
 
     TFT_eSPI   *_tft         = nullptr;

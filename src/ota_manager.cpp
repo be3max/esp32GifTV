@@ -128,18 +128,35 @@ void OTAManager::drawConfirm(const char *current, const char *latest, uint8_t se
     char line[40];
     _tft->setTextDatum(TC_DATUM);
 
-    snprintf(line, sizeof(line), "Installed:  %s", current);
+    // Strip a leading 'v'/'V' so build version and git tag display the same way.
+    auto verText = [](const char *s) { return (s && (s[0] == 'v' || s[0] == 'V')) ? s + 1 : s; };
+
+    snprintf(line, sizeof(line), "Installed:  v%s", verText(current));
     _tft->setTextColor(TFT_WHITE, UI_NAVY);
     _tft->drawString(line, 120, 84, 2);
 
-    snprintf(line, sizeof(line), "Available:  %s", latest);
+    snprintf(line, sizeof(line), "Available:  v%s", verText(latest));
     _tft->setTextColor(UI_AMBER, UI_NAVY);
     _tft->drawString(line, 120, 108, 2);
 
-    // Two buttons — [ Back ]   [ Install ]
+    // Buttons (drawn here and repainted alone on toggle to avoid full-screen flicker)
+    drawConfirmButtons(sel);
+
+    // Footer hint
+    _tft->fillRect(8, 176, 224, 22, UI_NAVY);
+    _tft->setTextDatum(TC_DATUM);
+    _tft->setTextColor(UI_CGA_DARKGRAY, UI_NAVY);
+    _tft->drawString("Tap=move  Hold 1s=select", 120, 180, 2);
+}
+
+// Repaint only the two buttons — called on every selection toggle so the rest of
+// the screen is left untouched (no flicker, no missing-framebuffer flash).
+void OTAManager::drawConfirmButtons(uint8_t sel) {
+    if (!_tft) return;
     const int16_t btnY = 140, btnH = 26;
     const int16_t backX = 24,  backW = 80;
     const int16_t instX = 136, instW = 80;
+    _tft->setTextDatum(TC_DATUM);
 
     auto drawBtn = [&](int16_t x, int16_t w, const char *label, bool selected) {
         uint16_t bg = selected ? TFT_YELLOW : UI_NAVY;
@@ -151,11 +168,6 @@ void OTAManager::drawConfirm(const char *current, const char *latest, uint8_t se
     };
     drawBtn(backX, backW, "Back",    sel == 0);
     drawBtn(instX, instW, "Install", sel == 1);
-
-    // Footer hint
-    _tft->fillRect(8, 178, 224, 16, UI_NAVY);
-    _tft->setTextColor(UI_CGA_DARKGRAY, UI_NAVY);
-    _tft->drawString("Tap=move  Hold 1s=select", 120, 180, 2);
 }
 
 // ── Blocking choice loop (touch pad, edge + debounce) ──────────────────────────
@@ -196,7 +208,7 @@ int OTAManager::waitForChoice(const char *current, const char *latest) {
                 return sel;                 // hold → confirm
             } else {
                 sel = (sel == 0) ? 1 : 0;   // tap → toggle
-                drawConfirm(current, latest, sel);
+                drawConfirmButtons(sel);    // repaint buttons only — no flicker
             }
         }
 
@@ -220,20 +232,31 @@ bool OTAManager::fetchLatestVersion(char *outTag, size_t tagLen) {
     WiFiClientSecure sec;
     sec.setInsecure();
     HTTPClient http;
-    http.begin(sec, apiUrl);
-    http.setTimeout(10000);
-    http.addHeader("User-Agent",  "esp32GifTV/1.0");
-    http.addHeader("Accept",      "application/vnd.github+json");
 
-    int code = http.GET();
-    if (code != HTTP_CODE_OK) {
+    // Retry transient TLS connect failures (negative codes) — even after the GIF
+    // buffers are freed, the heap can stay fragmented enough that mbedTLS can't
+    // grab its ~40 KB contiguous handshake block (fails with -32512 → HTTP -1).
+    // A short backoff lets freed blocks coalesce. Mirrors the GIF-list fetch.
+    int code = 0;
+    for (uint8_t attempt = 0; attempt < 3; attempt++) {
+        http.begin(sec, apiUrl);
+        http.setTimeout(10000);
+        http.addHeader("User-Agent",  "esp32GifTV/1.0");
+        http.addHeader("Accept",      "application/vnd.github+json");
+
+        code = http.GET();
+        if (code == HTTP_CODE_OK) break;
+
         // Negative codes are HTTPClient/TLS errors (e.g. -1 connection refused),
         // usually heap/handshake failures; positive are HTTP status (403 rate limit).
-        Serial.printf("[OTA] API HTTP %d (%s) heap=%u\n",
-                      code, HTTPClient::errorToString(code).c_str(), ESP.getFreeHeap());
+        Serial.printf("[OTA] API HTTP %d (%s) try %u maxAlloc=%u heap=%u\n",
+                      code, HTTPClient::errorToString(code).c_str(),
+                      attempt + 1, ESP.getMaxAllocHeap(), ESP.getFreeHeap());
         http.end();
-        return false;
+        if (code >= 0) break;          // real HTTP error — don't retry
+        delay(400);
     }
+    if (code != HTTP_CODE_OK) return false;
 
     // Filter: only extract tag_name — saves heap on large JSON response
     JsonDocument filter;
