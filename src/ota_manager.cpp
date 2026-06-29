@@ -65,30 +65,38 @@ OTAManager::Result OTAManager::checkNow(bool interactive) {
     Serial.printf("[OTA] free heap before check=%u (largest block=%u)\n",
                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
-    _tft->fillScreen(TFT_BLACK);
-    drawFrame();
-    drawProgress("Checking GitHub...", 0, 0, 0);
+    // Auto-check (interactive=false) stays silent: no page is drawn unless a
+    // newer firmware is found. Only the manual menu check paints these screens.
+    if (interactive) {
+        _tft->fillScreen(TFT_BLACK);
+        drawFrame();
+        drawProgress("Checking GitHub...", 0, 0, 0);
+    }
 
     char latestTag[32] = {0};
     if (!fetchLatestVersion(latestTag, sizeof(latestTag))) {
-        drawResult(false, "Version check failed");
-        delay(4000);
+        if (interactive) {
+            drawResult(false, "Version check failed");
+            delay(4000);
+        }
         return Result::FAILED;
     }
 
     Serial.printf("[OTA] current=%s  latest=%s\n", FIRMWARE_VERSION_STR, latestTag);
 
     if (!isNewerVersion(FIRMWARE_VERSION_STR, latestTag)) {
-        // Already on latest — show success, dismiss after 3 s
-        _tft->fillRect(BAR_X + 1, BAR_Y + 1, BAR_W - 2, BAR_H - 2, 0x03E0); // dark green fill
-        _tft->fillRect(8, 78, 224, 16, UI_NAVY);
-        _tft->setTextDatum(TC_DATUM);
-        _tft->setTextColor(TFT_GREEN, UI_NAVY);
-        _tft->drawString("Firmware up to date", 120, 78, 2);
-        _tft->fillRect(8, 124, 224, 16, UI_NAVY);
-        _tft->setTextColor(UI_AMBER, UI_NAVY);
-        _tft->drawString(FIRMWARE_VERSION_STR, 120, 124, 2);
-        delay(3000);
+        if (interactive) {
+            // Already on latest — show success, dismiss after 3 s
+            _tft->fillRect(BAR_X + 1, BAR_Y + 1, BAR_W - 2, BAR_H - 2, 0x03E0); // dark green fill
+            _tft->fillRect(8, 78, 224, 16, UI_NAVY);
+            _tft->setTextDatum(TC_DATUM);
+            _tft->setTextColor(TFT_GREEN, UI_NAVY);
+            _tft->drawString("Firmware up to date", 120, 78, 2);
+            _tft->fillRect(8, 124, 224, 16, UI_NAVY);
+            _tft->setTextColor(UI_AMBER, UI_NAVY);
+            _tft->drawString(FIRMWARE_VERSION_STR, 120, 124, 2);
+            delay(3000);
+        }
         return Result::UP_TO_DATE;
     }
 
